@@ -15,6 +15,10 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import { acquire, release } from '@/lib/popupLock';
+import { useSupabase } from '@/lib/ecosystemFlags';
+import { supabase } from '@/lib/supabase';
+import { signInWithGoogleIdToken } from '@/lib/googleIdTokenSignIn';
+import { resolveSupabaseAppUser } from '@/lib/supabaseAuthBridge';
 
 export type AuthContextType = {
   user: User | null;
@@ -38,6 +42,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const db = getFirestore();
+  const isSupabaseAuth = useSupabase();
 
   // Helper: load follows for current user and merge into user context
   const loadFollows = useCallback(async (uid: string) => {
@@ -151,6 +156,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Auth init: wait for persistence, subscribe to auth state immediately,
   // then call getRedirectResult non-blocking (it can hang in cross-origin setups).
   useEffect(() => {
+    if (!isSupabaseAuth) return;
+
+    let mounted = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      if (!session?.user) {
+        setUser(null);
+        setIsLoading(false);
+        return;
+      }
+      setIsLoading(true);
+      void resolveSupabaseAppUser(session.user)
+        .then((appUser) => {
+          if (mounted) setUser(appUser);
+        })
+        .catch((err) => {
+          console.error('[AuthContext] Supabase user resolve failed:', err);
+          if (mounted) {
+            setUser({
+              id: session.user.id,
+              name: session.user.email?.split('@')[0] || 'User',
+              email: session.user.email || '',
+              role: 'user',
+              avatar: `https://ui-avatars.com/api/?name=User&background=38B2AC&color=fff`,
+              dailyAdsWatched: 0,
+              lastAdWatchDate: new Date().toISOString().split('T')[0],
+            });
+          }
+        })
+        .finally(() => {
+          if (mounted) setIsLoading(false);
+        });
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [isSupabaseAuth]);
+
+  // Firebase auth (production / grabio.space)
+  useEffect(() => {
+    if (isSupabaseAuth) return;
+
     let mounted = true;
     let unsubscribe: (() => void) | undefined;
 
@@ -223,13 +272,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       mounted = false;
       unsubscribe?.();
     };
-  }, [resolveFirebaseUser]);
+  }, [resolveFirebaseUser, isSupabaseAuth]);
 
   // Removed Supabase profile/role logic. User state is now managed by Firebase only.
 
   const login = async (email: string, password: string) => {
     setIsLoading(true);
     try {
+      if (isSupabaseAuth) {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        toast.success('Logged in successfully');
+        return;
+      }
+
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       // Base user object
       let baseUser = {
@@ -316,6 +372,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const googleLogin = async () => {
+    if (isSupabaseAuth) {
+      const { error } = await signInWithGoogleIdToken();
+      if (error) {
+        console.error('Google login error:', error);
+        toast.error(error.message || 'Google sign-in failed');
+      }
+      return;
+    }
+
     if (!acquire()) {
       toast.error('Sign-in already in progress. Please complete the open sign-in window.');
       return;
@@ -446,7 +511,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     try {
-      await signOut(auth);
+      if (isSupabaseAuth) {
+        await supabase.auth.signOut();
+      } else {
+        await signOut(auth);
+      }
       setUser(null);
       clearCrmRepSession();
       localStorage.removeItem('subAccountInfo');

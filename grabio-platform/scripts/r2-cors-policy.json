@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "http://grabio.online",
+          "https://grabio.online",
+          "http://www.grabio.online",
+          "https://www.grabio.online",
+          "http://media.grabio.online",
+          "https://media.grabio.online",
+          "http://localhost:5173",
+          "http://localhost:8080"
+        ],
+        "methods": ["GET", "PUT", "POST", "HEAD", "DELETE"],
+        "headers": ["*"]
+      },
+      "exposeHeaders": ["ETag", "Content-Length", "Content-Type"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}

@@ -29,12 +29,15 @@ const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'market-flow-7b07
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const MIGRATE_ALL = args.includes('--all');
+const MIGRATE_EVERYTHING = args.includes('--everything');
 const COLLECTIONS_ARG = args.find((a) => a.startsWith('--collections='));
 const TARGET_COLLECTIONS = COLLECTIONS_ARG
   ? COLLECTIONS_ARG.replace('--collections=', '').split(',')
-  : MIGRATE_ALL
-    ? ['users', 'storeProfiles', 'products', 'orders', 'customers']
-    : [];
+  : MIGRATE_EVERYTHING
+    ? ['users', 'storeProfiles', 'products', 'orders', 'customers', 'archive', 'auth', 'subcollections']
+    : MIGRATE_ALL
+      ? ['users', 'storeProfiles', 'products', 'orders', 'customers']
+      : [];
 
 function initFirebase() {
   if (admin.apps.length) return;
@@ -525,11 +528,180 @@ const RUNNERS: Record<string, () => Promise<{ success: number; errors: number }>
   products: migrateProducts,
   orders: migrateOrders,
   customers: migrateCustomers,
+  auth: migrateFirebaseAuthUsers,
+  archive: migrateAllToArchive,
+  subcollections: migrateSubcollections,
 };
+
+function serializeFirestore(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (value instanceof admin.firestore.Timestamp) return value.toDate().toISOString();
+  if (value instanceof admin.firestore.GeoPoint) return { lat: value.latitude, lng: value.longitude };
+  if (value instanceof admin.firestore.DocumentReference) return value.path;
+  if (Array.isArray(value)) return value.map(serializeFirestore);
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = serializeFirestore(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function inferStoreFirebaseId(data: Record<string, unknown>, parentPath?: string): string | null {
+  const direct = data.storeId || data.store_id || data.storeProfileId;
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  if (parentPath?.includes('storeProfiles/')) {
+    const m = parentPath.match(/storeProfiles\/([^/]+)/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+async function upsertArchiveBatch(
+  rows: Array<{
+    collection: string;
+    firebase_id: string;
+    store_firebase_id: string | null;
+    parent_path: string | null;
+    data: Record<string, unknown>;
+  }>,
+) {
+  if (DRY_RUN || rows.length === 0) return { success: rows.length, errors: 0 };
+  const { error } = await supabase.from('firestore_archive').upsert(rows, {
+    onConflict: 'collection,firebase_id',
+  });
+  if (error) {
+    console.error(`   ❌ archive batch:`, error.message);
+    return { success: 0, errors: rows.length };
+  }
+  return { success: rows.length, errors: 0 };
+}
+
+async function archiveFirestoreSnapshot(
+  collection: string,
+  docs: admin.firestore.QueryDocumentSnapshot[],
+  parentPath?: string,
+) {
+  const BATCH = 200;
+  let success = 0;
+  let errors = 0;
+
+  for (let i = 0; i < docs.length; i += BATCH) {
+    const chunk = docs.slice(i, i + BATCH);
+    const rows = chunk.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      return {
+        collection,
+        firebase_id: doc.id,
+        store_firebase_id: inferStoreFirebaseId(data, parentPath),
+        parent_path: parentPath || null,
+        data: serializeFirestore(data) as Record<string, unknown>,
+      };
+    });
+    const res = await upsertArchiveBatch(rows);
+    success += res.success;
+    errors += res.errors;
+    if (docs.length > BATCH) {
+      process.stdout.write(`   📦 ${collection}: ${Math.min(i + BATCH, docs.length)}/${docs.length}\r`);
+    }
+  }
+
+  if (docs.length > BATCH) console.log('');
+  return { success, errors };
+}
+
+async function migrateFirebaseAuthUsers() {
+  console.log('\n🔄 Migrating: Firebase Auth users (all accounts)');
+  let success = 0;
+  let errors = 0;
+  let pageToken: string | undefined;
+
+  do {
+    const batch = await admin.auth().listUsers(1000, pageToken);
+    console.log(`   Batch: ${batch.users.length} users`);
+
+    if (DRY_RUN) {
+      success += batch.users.length;
+    } else {
+      for (const user of batch.users) {
+        const uid = await resolveUserUuid(user.uid, user.email);
+        if (uid) {
+          await supabase.from('users').upsert(
+            {
+              id: uid,
+              email: user.email || `${user.uid}@migrate.grabio.local`,
+              display_name: user.displayName || null,
+              avatar_url: user.photoURL || null,
+              firebase_uid: user.uid,
+              role: 'merchant',
+            },
+            { onConflict: 'id' },
+          );
+          success++;
+        } else {
+          errors++;
+        }
+      }
+    }
+    pageToken = batch.pageToken;
+  } while (pageToken);
+
+  console.log(`   ✅ Done: ${success} auth users, ${errors} errors`);
+  return { success, errors };
+}
+
+async function migrateAllToArchive() {
+  console.log('\n🔄 Archiving: all top-level Firestore collections');
+  const collections = await firestore().listCollections();
+  let totalSuccess = 0;
+  let totalErrors = 0;
+
+  for (const col of collections.sort((a, b) => a.id.localeCompare(b.id))) {
+    const snap = await col.get();
+    console.log(`   → ${col.id} (${snap.size} docs)`);
+    const res = await archiveFirestoreSnapshot(col.id, snap.docs);
+    totalSuccess += res.success;
+    totalErrors += res.errors;
+  }
+
+  console.log(`   ✅ Archive done: ${totalSuccess} docs, ${totalErrors} errors`);
+  return { success: totalSuccess, errors: totalErrors };
+}
+
+async function migrateSubcollections() {
+  console.log('\n🔄 Archiving: storeProfiles + builders subcollections');
+  let totalSuccess = 0;
+  let totalErrors = 0;
+
+  const roots = [
+    { name: 'storeProfiles', snap: await firestore().collection('storeProfiles').get() },
+    { name: 'builders', snap: await firestore().collection('builders').get() },
+  ];
+
+  for (const root of roots) {
+    for (const doc of root.snap.docs) {
+      const parentPath = `${root.name}/${doc.id}`;
+      const subs = await firestore().collection(root.name).doc(doc.id).listCollections();
+      for (const sub of subs) {
+        const subSnap = await sub.get();
+        const collectionKey = `${parentPath}/${sub.id}`;
+        console.log(`   → ${collectionKey} (${subSnap.size})`);
+        const res = await archiveFirestoreSnapshot(collectionKey, subSnap.docs, parentPath);
+        totalSuccess += res.success;
+        totalErrors += res.errors;
+      }
+    }
+  }
+
+  console.log(`   ✅ Subcollections: ${totalSuccess} docs, ${totalErrors} errors`);
+  return { success: totalSuccess, errors: totalErrors };
+}
 
 async function main() {
   if (TARGET_COLLECTIONS.length === 0) {
-    console.error('❌ Use --all or --collections=users,storeProfiles,products,orders');
+    console.error('❌ Use --all, --everything, or --collections=...');
     process.exit(1);
   }
 
@@ -545,7 +717,16 @@ async function main() {
   console.log(`   Collections: ${TARGET_COLLECTIONS.join(', ')}`);
 
   const results: Record<string, { success: number; errors: number }> = {};
-  const order = ['users', 'storeProfiles', 'products', 'orders', 'customers'];
+  const order = [
+    'auth',
+    'users',
+    'storeProfiles',
+    'products',
+    'orders',
+    'customers',
+    'archive',
+    'subcollections',
+  ];
 
   for (const col of order) {
     if (!TARGET_COLLECTIONS.includes(col)) continue;

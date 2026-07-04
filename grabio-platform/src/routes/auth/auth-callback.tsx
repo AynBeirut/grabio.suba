@@ -2,10 +2,18 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/useAuth";
+import { useSupabase } from "@/lib/ecosystemFlags";
+import { supabase } from "@/lib/supabase";
 
 export default function AuthCallback() {
   const navigate = useNavigate();
   const { user, isLoading } = useAuth();
+  const isSupabaseAuth = useSupabase();
+
+  useEffect(() => {
+    if (!isSupabaseAuth) return;
+    void supabase.auth.getSession();
+  }, [isSupabaseAuth]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -25,7 +33,7 @@ export default function AuthCallback() {
 
     const timer = setTimeout(() => {
       navigate('/login', { replace: true });
-    }, 3000);
+    }, 5000);
 
     return () => clearTimeout(timer);
   }, [navigate, user, isLoading]);

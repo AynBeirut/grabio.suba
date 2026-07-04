@@ -22,6 +22,13 @@ export function isModularEntitlementsEnabled(): boolean {
   return ECOSYSTEM_FLAGS.modularEntitlements;
 }
 
+/** grabio.online always uses Supabase auth (even if an old cached bundle lacks the env flag). */
+function isSupabaseHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  return h === 'grabio.online' || h === 'www.grabio.online';
+}
+
 export function useSupabase(): boolean {
-  return ECOSYSTEM_FLAGS.useSupabase;
+  return ECOSYSTEM_FLAGS.useSupabase || isSupabaseHost();
 }

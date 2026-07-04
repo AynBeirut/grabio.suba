@@ -13,6 +13,9 @@ grabio-platform/.env
 !**/.env.example
 !**/.env.local.example
 !**/.env.secrets.example
+scripts/firebase-service-account.json
+serviceAccountKey.json
+*.exe
 AI BUILDER/.credentials.md
 *.tar.gz
 *.zip

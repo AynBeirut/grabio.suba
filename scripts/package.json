@@ -8,6 +8,7 @@
     "migrate:products": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --collections=products",
     "migrate:orders": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --collections=orders,customers",
     "migrate:all": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --all",
+    "migrate:everything": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --everything",
     "migrate:images": "ts-node --project tsconfig.json migrate-images-to-r2.ts"
   },
   "dependencies": {

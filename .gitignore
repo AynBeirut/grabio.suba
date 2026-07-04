@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.next/
+build/
+.env
+.env.local
+.env.production
+.credentials.md
+.env.secrets
+grabio-platform/.env
+**/client_secret*.json
+**/.env
+!**/.env.example
+!**/.env.local.example
+!**/.env.secrets.example
+AI BUILDER/.credentials.md
+*.tar.gz
+*.zip
+.firebase/
+.gradle/
+bun.lockb
+package-lock.json
+*.db
+*.db.backup-*
+.DS_Store

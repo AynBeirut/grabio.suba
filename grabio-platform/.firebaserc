@@ -1,0 +1,12 @@
+{
+  "projects": {
+    "default": "market-flow-7b074"
+  },
+  "targets": {
+    "market-flow-7b074": {
+      "hosting": {
+        "grabio-online": ["grabio-online"]
+      }
+    }
+  }
+}

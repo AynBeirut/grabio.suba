@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cache Clear - AI Builder</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 600px;
+            margin: 100px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        h1 { color: #2563eb; }
+        .steps {
+            background: #f1f5f9;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .steps li {margin: 10px 0;}
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {background: #1d4ed8;}
+        #timestamp {
+            font-family: monospace;
+            color: #64748b;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔄 AI Builder Cache Clear</h1>
+    <p>If you're seeing an old version of the site, follow these steps:</p>
+    
+    <div class="steps">
+        <ol>
+            <li><strong>Close ALL tabs</strong> for ai.aynbeirut.dev</li>
+            <li><strong>Firefox:</strong> Press <code>Ctrl+Shift+Delete</code></li>
+            <li>Select "<strong>Everything</strong>" in Time Range</li>
+            <li>Check "<strong>Cookies</strong>" and "<strong>Cache</strong>"</li>
+            <li>Click "<strong>Clear Now</strong>"</li>
+            <li>Close Firefox completely</li>
+            <li>Reopen Firefox</li>
+            <li>Click the button below</li>
+        </ol>
+    </div>
+
+    <button onclick="forceReload()">🚀 Go to Fresh Site</button>
+    <button onclick="openIncognito()">🔒 Open in Incognito</button>
+    
+    <p id="timestamp"></p>
+
+    <script>
+        // Display current timestamp to prove this page is not cached
+        document.getElementById('timestamp').textContent = 
+            'Page loaded at: ' + new Date().toISOString();
+        
+        function forceReload() {
+            // Add timestamp to force fresh load
+            const ts = Date.now();
+            window.location.href = `/?v=${ts}`;
+        }
+        
+        function openIncognito() {
+            alert('Please manually open a new Incognito/Private window (Ctrl+Shift+P) and visit:\n\nhttps://ai.aynbeirut.dev/');
+        }
+        
+        // Try to clear any service workers
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(registrations => {
+                for(let registration of registrations) {
+                    registration.unregister();
+                    console.log('Service worker unregistered');
+                }
+            });
+        }
+        
+        // Try to clear caches
+        if ('caches' in window) {
+            caches.keys().then(names => {
+                for (let name of names) {
+                    caches.delete(name);
+                    console.log('Cache deleted:', name);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "grabio-supabase-migration-scripts",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "migrate:dry": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --dry-run --all",
+    "migrate:stores": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --collections=storeProfiles",
+    "migrate:products": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --collections=products",
+    "migrate:orders": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --collections=orders,customers",
+    "migrate:all": "ts-node --project tsconfig.json migrate-firestore-to-supabase.ts --all",
+    "migrate:images": "ts-node --project tsconfig.json migrate-images-to-r2.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "dotenv": "^16.4.7",
+    "firebase-admin": "^13.2.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.2"
+  }
+}

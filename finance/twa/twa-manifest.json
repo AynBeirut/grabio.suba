@@ -1,0 +1,61 @@
+{
+  "packageId": "space.grabio.finance",
+  "host": "grabio.space",
+  "name": "Grabio Invoice Manager",
+  "launcherName": "Grabio Invoice",
+  "display": "standalone",
+  "themeColor": "#38B2AC",
+  "themeColorDark": "#000000",
+  "navigationColor": "#38B2AC",
+  "navigationColorDark": "#2C9A94",
+  "navigationDividerColor": "#38B2AC",
+  "navigationDividerColorDark": "#2C9A94",
+  "backgroundColor": "#FFFFFF",
+  "enableNotifications": false,
+  "startUrl": "/invoice/?source=grabio-finance-app",
+  "iconUrl": "https://grabio.space/invoice/icon-512.png",
+  "maskableIconUrl": "https://grabio.space/invoice/icon-512.png",
+  "monochromeIconUrl": "https://grabio.space/invoice/icon-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./grabio-finance-release.keystore",
+    "alias": "grabio-finance"
+  },
+  "appVersionName": "1.1.0",
+  "appVersionCode": 3,
+  "shortcuts": [
+    {
+      "name": "Create Invoice",
+      "shortName": "Invoice",
+      "url": "/invoice/invoices?source=grabio-finance-app",
+      "chosenIconUrl": "https://grabio.space/invoice/icon-192.png"
+    },
+    {
+      "name": "Reports",
+      "shortName": "Reports",
+      "url": "/invoice/reports?source=grabio-finance-app",
+      "chosenIconUrl": "https://grabio.space/invoice/icon-192.png"
+    }
+  ],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://grabio.space/invoice/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {
+    "locationDelegation": {
+      "enabled": false
+    }
+  },
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "minSdkVersion": 21,
+  "orientation": "default",
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "displayOverride": [],
+  "appVersion": "1.1.0"
+}

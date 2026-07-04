@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Force Refresh - AI Builder</title>
+    <style>
+        body {
+            font-family: system-ui;
+            max-width: 600px;
+            margin: 100px auto;
+            padding: 20px;
+            text-align: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        h1 { font-size: 48px; margin-bottom: 10px; }
+        .info { background: rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; margin: 20px 0; }
+        button {
+            background: white;
+            color: #667eea;
+            border: none;
+            padding: 15px 30px;
+            font-size: 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { transform: scale(1.05); }
+        #countdown { font-size: 24px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>✅ Server Fixed!</h1>
+    <div class="info">
+        <p><strong>The server configuration has been corrected</strong></p>
+        <p>Old deployment directory removed</p>
+        <p>Apache proxy configured correctly</p>
+        <p>No-cache headers applied</p>
+    </div>
+    
+    <p>Redirecting in <span id="countdown">3</span> seconds...</p>
+    <button onclick="goNow()">Go Now</button>
+
+    <script>
+        let count = 3;
+        const countdown = document.getElementById('countdown');
+        
+        const timer = setInterval(() => {
+            count--;
+            countdown.textContent = count;
+            if (count <= 0) {
+                clearInterval(timer);
+                goToSite();
+            }
+        }, 1000);
+        
+        function goNow() {
+            clearInterval(timer);
+            goToSite();
+        }
+        
+        function goToSite() {
+            // Clear all caches
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then(registrations => {
+                    registrations.forEach(r => r.unregister());
+                });
+            }
+            if ('caches' in window) {
+                caches.keys().then(names => names.forEach(name => caches.delete(name)));
+            }
+            
+            // Add timestamp to force fresh load
+            const ts = Date.now();
+            window.location.href = `/?cache-bust=${ts}`;
+        }
+    </script>
+</body>
+</html>

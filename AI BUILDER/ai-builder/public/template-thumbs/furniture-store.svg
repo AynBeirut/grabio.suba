@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="780" viewBox="0 0 1200 780">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="780" fill="#f8fafc"/>
+  <rect x="34" y="34" width="1132" height="712" rx="24" fill="white" stroke="#dbeafe" stroke-width="4"/>
+  <rect x="76" y="84" width="1048" height="58" rx="12" fill="url(#g)"/>
+  <rect x="76" y="168" width="680" height="190" rx="16" fill="#dbeafe"/>
+  <rect x="778" y="168" width="346" height="190" rx="16" fill="#ede9fe"/>
+  <rect x="76" y="380" width="250" height="132" rx="14" fill="#e0e7ff"/>
+  <rect x="342" y="380" width="250" height="132" rx="14" fill="#dbeafe"/>
+  <rect x="608" y="380" width="250" height="132" rx="14" fill="#e9d5ff"/>
+  <rect x="874" y="380" width="250" height="132" rx="14" fill="#bfdbfe"/>
+  <rect x="76" y="538" width="1048" height="152" rx="14" fill="#f1f5f9"/>
+  <text x="96" y="638" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="#0f172a">Furniture Store</text>
+  <text x="96" y="674" font-family="Arial, sans-serif" font-size="26" fill="#475569">Template preview</text>
+</svg>

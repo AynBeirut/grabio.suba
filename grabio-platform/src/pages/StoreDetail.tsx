@@ -1,0 +1,2112 @@
+
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { getFirestore, doc, getDoc, collection, query, where, getDocs, runTransaction, orderBy, serverTimestamp } from 'firebase/firestore';
+import SEOHead from '@/components/SEOHead';
+import { auth as firebaseAuth } from '@/lib/firebase';
+import { useAuth } from '@/context/useAuth';
+
+const API_URL = import.meta.env.VITE_API_URL || 'https://us-central1-market-flow-7b074.cloudfunctions.net/api';
+import { toast } from '@/components/ui/sonner';
+import { pushDebugLog } from '@/lib/debugLogger';
+import { StoreReview } from '@/types/product';
+import { Button } from '@/components/ui/button';
+import { Star } from 'lucide-react';
+import { Store, Product, StoreAnnouncement } from '@/types/product';
+import { Recipe, RawMaterial } from '@/types/inventory';
+import { calculateAvailableStock } from '@/lib/composedProductStock';
+import { ECOSYSTEM_FLAGS, useSupabase } from '@/lib/ecosystemFlags';
+import { fetchPublicStoreProducts, resolvePublicStore } from '@/lib/publicStoreService';
+import { fetchPublicProductStock } from '@/lib/publicProductStockService';
+import Header from '@/components/Header';
+import ProductCard from '@/components/ProductCard';
+import WhatsAppChatWidget from '@/components/WhatsAppChatWidget';
+import { MapPin, Globe, Facebook, Instagram, Twitter, Phone, Mail } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { generateSlug } from '@/lib/slugify';
+import ClampedText from '@/components/ClampedText';
+import type { StoreSectionId, StoreSectionOrder, SectionWidth } from '@/types/storeProfile';
+import EditorRegionShell from '@/components/builder/EditorRegionShell';
+import type { EditorPreviewStatePayload, EditorSelectableId } from '@/lib/editorPreviewBridge';
+import { EDITOR_PREVIEW_READY, EDITOR_PREVIEW_STATE } from '@/lib/editorPreviewBridge';
+import { mergeSectionOrderFromProfile } from '@/lib/storeSectionDefaults';
+import { mergeTemplateColors } from '@/lib/storeContentDraft';
+
+// ── Store-level contact form (sends message to storeContactMessages/{storeId}/messages) ──
+const StoreContactForm: React.FC<{ storeId: string; storeName: string; theme: { cardSoft: string; sectionTitle: string; mutedText: string }; formStyle?: 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 }> = ({ storeId, storeName, theme, formStyle = 1 }) => {
+  const [form, setForm] = useState({ name: '', email: '', phone: '', subject: '', message: '', company: '', priority: 'normal', rating: 5 });
+  const [sending, setSending] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState('');
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+    setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSending(true);
+    setErr('');
+    try {
+      const res = await fetch(`${API_URL}/contact/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, subject: form.subject || `Message from ${form.name}`, storeId }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || 'Failed to send');
+      }
+      setDone(true);
+      setForm({ name: '', email: '', phone: '', subject: '', message: '', company: '', priority: 'normal', rating: 5 });
+    } catch {
+      setErr('Failed to send. Please try again.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // Compact inline style (style 8)
+  if (formStyle === 8) {
+    return (
+      <Card className={theme.cardSoft}>
+        <CardContent className="p-4">
+          <h3 className={`font-semibold text-base mb-3 ${theme.sectionTitle}`}>Quick Contact</h3>
+          {done ? (
+            <div className="text-center py-6">
+              <p className={`font-medium ${theme.sectionTitle}`}>✓ Sent!</p>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <Input name="name" placeholder="Name *" value={form.name} onChange={handleChange} required className="text-sm" />
+                <Input name="email" type="email" placeholder="Email *" value={form.email} onChange={handleChange} required className="text-sm" />
+              </div>
+              <Textarea name="message" placeholder="Message *" rows={3} value={form.message} onChange={handleChange} required className="text-sm resize-none" />
+              {err && <p className="text-xs text-red-500">{err}</p>}
+              <Button type="submit" disabled={sending} size="sm" className="w-full">{sending ? 'Sending...' : 'Send'}</Button>
+            </form>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Appointment style with date/time (style 11)
+  if (formStyle === 11) {
+    return (
+      <Card className={theme.cardSoft}>
+        <CardContent className="p-6">
+          <h3 className={`font-semibold text-lg mb-4 ${theme.sectionTitle}`}>Book an Appointment</h3>
+          {done ? (
+            <div className="flex flex-col items-center py-8 gap-3 text-center">
+              <svg className="w-12 h-12 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <p className={`font-medium ${theme.sectionTitle}`}>Appointment Requested!</p>
+              <p className={`text-sm ${theme.mutedText}`}>We'll confirm your booking soon.</p>
+              <button onClick={() => setDone(false)} className={`text-xs underline mt-1 ${theme.mutedText}`}>Book another</button>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <Input name="name" placeholder="Your Name *" value={form.name} onChange={handleChange} required />
+              <Input name="email" type="email" placeholder="Email Address *" value={form.email} onChange={handleChange} required />
+              <Input name="phone" type="tel" placeholder="Phone Number *" value={form.phone} onChange={handleChange} required />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor="appt-date" className="text-xs">Preferred Date</Label>
+                  <Input id="appt-date" name="subject" type="date" value={form.subject} onChange={handleChange} required />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="appt-time" className="text-xs">Preferred Time</Label>
+                  <Input id="appt-time" name="company" type="time" value={form.company} onChange={handleChange} required />
+                </div>
+              </div>
+              <Textarea name="message" placeholder="Additional notes or special requests..." rows={3} value={form.message} onChange={handleChange} className="resize-none" />
+              {err && <p className="text-sm text-red-500">{err}</p>}
+              <Button type="submit" disabled={sending} className="w-full">{sending ? 'Sending...' : 'Request Appointment'}</Button>
+            </form>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Quote request with product selector (style 12)
+  if (formStyle === 12) {
+    return (
+      <Card className={theme.cardSoft}>
+        <CardContent className="p-6">
+          <h3 className={`font-semibold text-lg mb-4 ${theme.sectionTitle}`}>Request a Quote</h3>
+          {done ? (
+            <div className="flex flex-col items-center py-8 gap-3 text-center">
+              <svg className="w-12 h-12 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <p className={`font-medium ${theme.sectionTitle}`}>Quote Request Sent!</p>
+              <p className={`text-sm ${theme.mutedText}`}>We'll prepare your custom quote.</p>
+              <button onClick={() => setDone(false)} className={`text-xs underline mt-1 ${theme.mutedText}`}>Request another</button>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <Input name="name" placeholder="Your Name *" value={form.name} onChange={handleChange} required />
+              <Input name="email" type="email" placeholder="Email Address *" value={form.email} onChange={handleChange} required />
+              <div className="space-y-1">
+                <Label htmlFor="product-select" className="text-sm">Product/Service</Label>
+                <Input id="product-select" name="subject" placeholder="What product are you interested in? *" value={form.subject} onChange={handleChange} required />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="quantity" className="text-sm">Quantity</Label>
+                <Input id="quantity" name="company" type="number" min="1" placeholder="How many units?" value={form.company} onChange={handleChange} />
+              </div>
+              <Textarea name="message" placeholder="Additional requirements or specifications..." rows={4} value={form.message} onChange={handleChange} className="resize-none" />
+              {err && <p className="text-sm text-red-500">{err}</p>}
+              <Button type="submit" disabled={sending} className="w-full">{sending ? 'Sending...' : 'Get Quote'}</Button>
+            </form>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Bordered glass style (style 15)
+  if (formStyle === 15) {
+    return (
+      <Card className="backdrop-blur-md bg-white/60 border-2 border-white/80 shadow-xl">
+        <CardContent className="p-6">
+          <h3 className={`font-semibold text-lg mb-4 ${theme.sectionTitle}`}>Get in Touch</h3>
+          {done ? (
+            <div className="flex flex-col items-center py-8 gap-3 text-center">
+              <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center">
+                <svg className="w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+              </div>
+              <p className={`font-medium ${theme.sectionTitle}`}>Message Delivered!</p>
+              <button onClick={() => setDone(false)} className="text-xs underline">Send another</button>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <Input name="name" placeholder="Your Name *" value={form.name} onChange={handleChange} required className="bg-white/50 border-white/60" />
+              <Input name="email" type="email" placeholder="Email Address *" value={form.email} onChange={handleChange} required className="bg-white/50 border-white/60" />
+              <Textarea name="message" placeholder="Your Message *" rows={5} value={form.message} onChange={handleChange} required className="resize-none bg-white/50 border-white/60" />
+              {err && <p className="text-sm text-red-500">{err}</p>}
+              <Button type="submit" disabled={sending} className="w-full">{sending ? 'Sending...' : 'Send Message'}</Button>
+            </form>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className={formStyle === 5 ? 'shadow-xl' : theme.cardSoft}>
+      <CardContent className="p-6">
+        <h3 className={`font-semibold text-lg mb-4 ${theme.sectionTitle}`}>{formStyle === 4 ? 'Step 1: Your Details' : formStyle === 10 ? 'Stay Updated' : formStyle === 13 ? 'Support Request' : formStyle === 14 ? 'Share Your Feedback' : 'Send a Message'}</h3>
+        {done ? (
+          <div className="flex flex-col items-center py-8 gap-3 text-center">
+            <svg className="w-12 h-12 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            <p className={`font-medium ${theme.sectionTitle}`}>Message Sent!</p>
+            <p className={`text-sm ${theme.mutedText}`}>The store will get back to you soon.</p>
+            <button onClick={() => setDone(false)} className={`text-xs underline mt-1 ${theme.mutedText}`}>Send another</button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className={formStyle === 5 ? 'space-y-3 bg-white rounded-xl p-4 shadow-md' : 'space-y-3'}>
+            {formStyle !== 10 && formStyle !== 14 && (
+              <div className="space-y-1">
+                <Label htmlFor="sc-name">Your Name *</Label>
+                <Input id="sc-name" name="name" autoComplete="name" placeholder="Your name" value={form.name} onChange={handleChange} required />
+              </div>
+            )}
+            <div className="space-y-1">
+              <Label htmlFor="sc-email">{formStyle === 10 ? 'Email Address *' : 'Email Address *'}</Label>
+              <Input id="sc-email" name="email" type="email" autoComplete="email" placeholder="you@example.com" value={form.email} onChange={handleChange} required />
+            </div>
+            {formStyle === 2 && (
+              <div className="space-y-1">
+                <Label htmlFor="sc-phone">Phone Number</Label>
+                <Input id="sc-phone" name="phone" autoComplete="tel" placeholder="+1 555 000 000" value={form.phone} onChange={handleChange} />
+              </div>
+            )}
+            {formStyle === 3 && (
+              <div className="space-y-1">
+                <Label htmlFor="sc-subject">Subject</Label>
+                <Input id="sc-subject" name="subject" autoComplete="off" placeholder="Order inquiry" value={form.subject} onChange={handleChange} />
+              </div>
+            )}
+            {formStyle === 9 && (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="sc-phone">Phone Number</Label>
+                  <Input id="sc-phone" name="phone" autoComplete="tel" placeholder="+1 555 000 000" value={form.phone} onChange={handleChange} />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="sc-company">Company</Label>
+                  <Input id="sc-company" name="company" autoComplete="organization" placeholder="Your company name" value={form.company} onChange={handleChange} />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="sc-subject">Subject *</Label>
+                  <Input id="sc-subject" name="subject" autoComplete="off" placeholder="Topic" value={form.subject} onChange={handleChange} required />
+                </div>
+              </>
+            )}
+            {formStyle === 13 && (
+              <div className="space-y-1">
+                <Label htmlFor="sc-priority">Priority</Label>
+                <select id="sc-priority" name="priority" value={form.priority} onChange={handleChange} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                  <option value="low">Low</option>
+                  <option value="normal">Normal</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+              </div>
+            )}
+            {formStyle === 14 && (
+              <div className="space-y-1">
+                <Label htmlFor="sc-rating">Rating (1-5)</Label>
+                <input id="sc-rating" name="rating" type="range" min="1" max="5" value={form.rating} onChange={e => setForm(prev => ({ ...prev, rating: Number(e.target.value) }))} className="w-full" />
+                <div className="text-center text-sm text-yellow-500">{'★'.repeat(form.rating)}{'☆'.repeat(5 - form.rating)} ({form.rating}/5)</div>
+              </div>
+            )}
+            {formStyle === 4 && (
+              <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">Step 2: Write your message below.</div>
+            )}
+            {formStyle !== 10 && (
+              <div className="space-y-1">
+                <Label htmlFor="sc-message">{formStyle === 14 ? 'Feedback' : 'Message'} *</Label>
+                <Textarea id="sc-message" name="message" autoComplete="off" placeholder={formStyle === 14 ? 'Share your experience...' : 'Write your message...'} rows={5} value={form.message} onChange={handleChange} required className="resize-none" />
+              </div>
+            )}
+            {err && <p className="text-sm text-red-500">{err}</p>}
+            <div className="flex justify-end">
+              <Button type="submit" disabled={sending}>{sending ? 'Sending...' : formStyle === 10 ? 'Subscribe' : 'Send Message'}</Button>
+            </div>
+          </form>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+async function enrichStoreProductsWithStock(
+  storeDocId: string,
+  productsList: Product[],
+  legacyRecipes?: Recipe[],
+  legacyRawMaterials?: RawMaterial[],
+): Promise<Product[]> {
+  const composedIds = productsList
+    .filter((p) => p.productType === 'composed' && p.recipeId)
+    .map((p) => p.id);
+
+  if (ECOSYSTEM_FLAGS.publicProductStockApi && composedIds.length > 0) {
+    const stockItems = await fetchPublicProductStock(storeDocId, composedIds);
+    const stockMap = new Map(stockItems.map((item) => [item.productId, item]));
+    return productsList.map((product) => {
+      if (product.productType !== 'composed' || !product.recipeId) return product;
+      const stock = stockMap.get(product.id);
+      if (!stock) return product;
+      return {
+        ...product,
+        stock: stock.availableStock,
+        inStock: stock.inStock,
+      };
+    });
+  }
+
+  if (!legacyRecipes || !legacyRawMaterials) return productsList;
+
+  return productsList.map((product) => {
+    if (product.productType !== 'composed' || !product.recipeId) return product;
+    const recipe = legacyRecipes.find((r) => r.id === product.recipeId);
+    const availableStock = calculateAvailableStock(recipe, legacyRawMaterials);
+    return {
+      ...product,
+      stock: availableStock,
+      inStock: availableStock > 0,
+    };
+  });
+}
+
+const StoreDetail: React.FC = () => {
+  const { id, slug, categorySlug } = useParams<{ id?: string; slug?: string; categorySlug?: string }>();
+  const navigate = useNavigate();
+  const [storeId, setStoreId] = useState<string | null>(null);
+  const [store, setStore] = useState<Store | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [announcements, setAnnouncements] = useState<StoreAnnouncement[]>([]);
+  const [reviews, setReviews] = useState<StoreReview[]>([]);
+  const [avgRating, setAvgRating] = useState<number | null>(null);
+  const [newRating, setNewRating] = useState<number>(5);
+  const [newComment, setNewComment] = useState<string>('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editRating, setEditRating] = useState<number>(5);
+  const [editComment, setEditComment] = useState<string>('');
+  const { user, followStore, unfollowStore } = useAuth();
+  const isFollowing = !!user?.following?.includes(storeId || '');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  // Banner carousel state (must be here — before any early returns)
+  const [bannerIndex, setBannerIndex] = useState(0);
+  const bannerTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Read More modal state
+  const [readMoreContent, setReadMoreContent] = useState<{ title: string; text: string } | null>(null);
+  const [searchParams] = useSearchParams();
+  const editorPreview = searchParams.get('editorPreview') === '1';
+  const [editorHighlightSection, setEditorHighlightSection] = useState<EditorSelectableId | null>(null);
+  const [liveEditorState, setLiveEditorState] = useState<EditorPreviewStatePayload | null>(null);
+  // Page navigation state
+  const [activePage, setActivePage] = useState<string>('home');
+
+  useEffect(() => {
+    if (!editorPreview) return;
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'grabio:section-highlight') {
+        setEditorHighlightSection((event.data.sectionId as EditorSelectableId) ?? null);
+      }
+      if (event.data?.type === EDITOR_PREVIEW_STATE && event.data.payload) {
+        setLiveEditorState(event.data.payload as EditorPreviewStatePayload);
+      }
+    };
+    window.addEventListener('message', handler);
+    window.parent.postMessage({ type: EDITOR_PREVIEW_READY }, '*');
+    return () => window.removeEventListener('message', handler);
+  }, [editorPreview]);
+
+  useEffect(() => {
+    if (!editorPreview) return;
+    const blockNavigation = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest('a');
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href || href.startsWith('#')) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    document.addEventListener('click', blockNavigation, true);
+    return () => document.removeEventListener('click', blockNavigation, true);
+  }, [editorPreview]);
+
+  const normalizedCategorySlug = String(categorySlug || '').trim().toLowerCase();
+  const productCategories = useMemo(
+    () => Array.from(new Set(products.map((product) => String(product.category || '').trim()).filter(Boolean))),
+    [products]
+  );
+  const selectedCategory = useMemo(
+    () => productCategories.find((category) => generateSlug(category) === normalizedCategorySlug) || null,
+    [productCategories, normalizedCategorySlug]
+  );
+  const filteredProducts = useMemo(
+    () => (selectedCategory ? products.filter((product) => product.category === selectedCategory) : products),
+    [products, selectedCategory]
+  );
+  const storeBasePath = store?.slug ? `/${store.slug}` : storeId ? `/store/id/${storeId}` : '';
+
+  // Derive banner images safely (store may be null before load)
+  const bannerImagesCount = React.useMemo(() => {
+    if (!store) return 0;
+    const bg = typeof store.storeBackgroundImage === 'string' && store.storeBackgroundImage ? 1 : 0;
+    const carousel = Array.isArray(store.carouselImages) ? store.carouselImages.filter((u): u is string => typeof u === 'string' && u.trim().length > 0).length : 0;
+    return bg + carousel;
+  }, [store]);
+
+  // Auto-advance carousel — must be before early returns
+  useEffect(() => {
+    if (bannerImagesCount <= 1) return;
+    bannerTimer.current = setInterval(() => {
+      setBannerIndex(i => (i + 1) % bannerImagesCount);
+    }, 4000);
+    return () => { if (bannerTimer.current) clearInterval(bannerTimer.current); };
+  }, [bannerImagesCount]);
+
+  useEffect(() => {
+    const pixelEnabled = store?.metaIntegrationSettings?.pixelEnabled;
+    const pixelId = store?.metaIntegrationSettings?.pixelId?.trim();
+    if (!pixelEnabled || !pixelId || typeof window === 'undefined') return;
+
+    try {
+      if (localStorage.getItem('grabio_cookie_consent') !== 'accepted') return;
+    } catch {
+      return;
+    }
+
+    if (window.fbq) {
+      window.fbq('init', pixelId);
+      window.fbq('track', 'PageView');
+      return;
+    }
+
+    const fbq: any = function (...args: any[]) {
+      fbq.callMethod ? fbq.callMethod(...args) : fbq.queue.push(args);
+    };
+    fbq.push = fbq;
+    fbq.loaded = true;
+    fbq.version = '2.0';
+    fbq.queue = [];
+    window.fbq = fbq;
+    if (!window._fbq) window._fbq = fbq;
+
+    const script = document.createElement('script');
+    script.async = true;
+    script.src = 'https://connect.facebook.net/en_US/fbevents.js';
+    document.head.appendChild(script);
+
+    window.fbq('init', pixelId);
+    window.fbq('track', 'PageView');
+  }, [store?.metaIntegrationSettings?.pixelEnabled, store?.metaIntegrationSettings?.pixelId]);
+
+  // Fetch reviews helper (declared early so effects can call it)
+  const fetchReviews = useCallback(async () => {
+    if (!storeId) return;
+    try {
+      const db = getFirestore();
+      const reviewsRef = collection(db, 'storeReviews');
+      const q = query(reviewsRef, where('storeId', '==', storeId), orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      const items: StoreReview[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as StoreReview));
+      setReviews(items);
+      if (items.length > 0) {
+        const sum = items.reduce((s, r) => s + (r.rating || 0), 0);
+        setAvgRating(sum / items.length);
+      } else {
+        setAvgRating(null);
+      }
+    } catch (e) {
+      console.error('Failed to fetch reviews', e);
+    }
+  }, [storeId]);
+
+  useEffect(() => {
+    // Determine if we have a slug or ID
+    const identifier = slug || id;
+    
+    if (!identifier) {
+      setError('Store identifier is missing');
+      setIsLoading(false);
+      return;
+    }
+
+    const loadStore = async () => {
+      setIsLoading(true);
+      try {
+        if (useSupabase()) {
+          const resolved = await resolvePublicStore(identifier);
+          if (!resolved) {
+            setError('Store not found');
+            setIsLoading(false);
+            return;
+          }
+
+          const { store: storeData, storeUuid, legacyStoreId } = resolved;
+          setStoreId(legacyStoreId);
+          setStore(storeData);
+
+          if (storeData.slug && storeData.slug !== identifier && !editorPreview) {
+            navigate(`/${storeData.slug}`, { replace: true });
+            return;
+          }
+
+          const storeInfo = {
+            id: legacyStoreId,
+            name: storeData.name,
+            slug: storeData.slug,
+          };
+          const productsList = await fetchPublicStoreProducts(storeUuid, legacyStoreId, storeInfo);
+          const enrichedProducts = await enrichStoreProductsWithStock(
+            legacyStoreId,
+            productsList,
+            [],
+            [],
+          );
+          setProducts(enrichedProducts);
+          setAnnouncements([]);
+          setIsLoading(false);
+          return;
+        }
+
+        const db = getFirestore();
+        let storeData: Record<string, unknown> | null = null;
+        let docId: string = identifier;
+        
+        // Always try slug lookup first (works for any slug format — no hyphen required)
+        const storesRef = collection(db, 'storeProfiles');
+        const slugQuery = query(storesRef, where('slug', '==', identifier));
+        const slugSnap = await getDocs(slugQuery);
+        
+        if (!slugSnap.empty) {
+          docId = slugSnap.docs[0].id;
+          storeData = slugSnap.docs[0].data();
+          setStoreId(docId);
+        } else {
+          // Fall back to direct document ID lookup (backward compat with old ID-based links)
+          const storeRef = doc(db, 'storeProfiles', identifier);
+          const storeSnap = await getDoc(storeRef);
+          
+          if (!storeSnap.exists()) {
+            setError('Store not found');
+            setIsLoading(false);
+            return;
+          }
+          
+          storeData = storeSnap.data();
+          docId = identifier;
+          setStoreId(docId);
+          
+          // Redirect to short slug URL if store has a slug (not in theme-editor preview)
+          if (storeData.slug && !editorPreview) {
+            navigate(`/${storeData.slug}`, { replace: true });
+            return;
+          }
+        }
+        
+        setStore({ id: docId, ...storeData } as Store);
+
+        let recipesList: Recipe[] = [];
+        let rawMaterialsList: RawMaterial[] = [];
+        if (!ECOSYSTEM_FLAGS.publicProductStockApi) {
+          const recipesRef = collection(db, 'recipes');
+          const recipesQuery = query(recipesRef, where('storeId', '==', docId));
+          const recipesSnap = await getDocs(recipesQuery);
+          recipesList = recipesSnap.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          } as Recipe));
+
+          const rawMaterialsRef = collection(db, 'rawMaterials');
+          const rawMaterialsQuery = query(rawMaterialsRef, where('storeId', '==', docId));
+          const rawMaterialsSnap = await getDocs(rawMaterialsQuery);
+          rawMaterialsList = rawMaterialsSnap.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          } as RawMaterial));
+        }
+
+        // Fetch products for this store
+        const productsRef = collection(db, 'products');
+        const productsQuery = query(productsRef, where('storeId', '==', docId));
+        const productsSnap = await getDocs(productsQuery);
+
+        const storeInfo = {
+          id: docId,
+          name: typeof storeData?.name === 'string' ? storeData.name : 'Unknown Store',
+          slug: typeof storeData?.slug === 'string' ? storeData.slug : undefined,
+        };
+        const productsList = productsSnap.docs.map((doc) => {
+          const productData = doc.data();
+          return {
+            id: doc.id,
+            ...productData,
+            store: storeInfo,
+          } as Product;
+        });
+
+        const enrichedProducts = await enrichStoreProductsWithStock(
+          docId,
+          productsList,
+          recipesList,
+          rawMaterialsList,
+        );
+        setProducts(enrichedProducts);
+
+        // Fetch announcements for this store (optional, if you have this collection)
+        let announcementsList: StoreAnnouncement[] = [];
+        try {
+          const announcementsRef = collection(db, 'announcements');
+          const announcementsQuery = query(announcementsRef, where('storeId', '==', docId));
+          const announcementsSnap = await getDocs(announcementsQuery);
+          announcementsList = announcementsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as StoreAnnouncement));
+        } catch (e) {
+          console.error('Failed to load announcements', e);
+        }
+        setAnnouncements(announcementsList);
+      } catch (err) {
+        setError('Failed to load store data');
+        console.error(err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadStore();
+  }, [id, slug, navigate, editorPreview]);
+  
+  // Load reviews when storeId is set
+  useEffect(() => {
+    if (storeId) {
+      fetchReviews();
+    }
+  }, [storeId, fetchReviews]);
+
+  
+
+  if (isLoading) {
+    if (editorPreview) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-white">
+          <p className="text-sm text-gray-500 animate-pulse">Loading store preview…</p>
+        </div>
+      );
+    }
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Header
+          storeName={store?.name}
+          storeLogo={store?.logo}
+          storeSlug={store?.slug}
+          primaryColor={store?.templateColors?.primary}
+          subscriptionTier={store?.subscriptionTier}
+          hasCustomDomain={!!store?.customDomain}
+          hasImportedDesign={store?.hasImportedDesign}
+        />
+        <div className="container mx-auto px-4 py-12 flex justify-center">
+          <div className="animate-pulse space-y-8 w-full max-w-4xl">
+            <div className="h-40 bg-gray-200 rounded-lg"></div>
+            <div className="h-10 bg-gray-200 w-1/3 rounded"></div>
+            <div className="h-20 bg-gray-200 rounded"></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <div key={n} className="h-64 bg-gray-200 rounded-lg"></div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !store) {
+    if (editorPreview) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-white px-4">
+          <p className="text-sm text-gray-600 text-center">{error || 'Store not found'}</p>
+        </div>
+      );
+    }
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Header
+          storeName={store?.name}
+          storeLogo={store?.logo}
+          storeSlug={store?.slug}
+          primaryColor={store?.templateColors?.primary}
+          subscriptionTier={store?.subscriptionTier}
+          hasCustomDomain={!!store?.customDomain}
+          hasImportedDesign={store?.hasImportedDesign}
+        />
+        <div className="container mx-auto px-4 py-12 flex justify-center">
+          <div className="text-center">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">{error || 'Store not found'}</h2>
+            <p className="text-gray-600 mb-6">The store you're looking for doesn't exist or couldn't be loaded.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const allowedTemplates = new Set(['default', 'modern', 'minimalist', 'minimal', 'classic', 'classic_ecom', 'fashion_boutique', 'food_restaurant', 'tech_electronics', 'vibrant', 'professional', 'artistic']);
+  const editorPreviewLive = editorPreview && Boolean(liveEditorState);
+  const liveContent = editorPreviewLive ? liveEditorState?.content : undefined;
+  const liveThemeFields = editorPreviewLive ? liveEditorState?.theme : undefined;
+  const resolvedTemplateRaw = liveThemeFields?.template ?? store.template;
+  const resolvedTemplate = typeof resolvedTemplateRaw === 'string' && allowedTemplates.has(resolvedTemplateRaw)
+    ? resolvedTemplateRaw
+    : 'modern';
+  
+  // White-label detection: Pro/Business/Premium tier OR Custom Domain OR Imported Design
+  const isPaidTier = ['pro', 'business', 'premium'].includes(store.subscriptionTier || '');
+  const isWhiteLabel = isPaidTier || !!store.customDomain || !!store.hasImportedDesign;
+  
+  // For white-label stores, use a clean hero background (no dark gradient)
+  const whiteLabelHeroBg = store.templateColors?.primary 
+    ? '' // Use inline style with store's primary color
+    : 'bg-gradient-to-r from-blue-50 to-indigo-50'; // Light fallback
+  
+  const templateStyles: Record<string, {
+    pageBg: string;
+    heroBg: string;
+    headerCard: string;
+    sectionTitle: string;
+    card: string;
+    cardSoft: string;
+    mutedText: string;
+    link: string;
+    actionButton: string;
+    reviewCard: string;
+  }> = {
+    default: {
+      pageBg: 'bg-gray-50',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-gray-700 to-gray-900',
+      headerCard: 'bg-white border border-gray-100',
+      sectionTitle: 'text-gray-900',
+      card: 'bg-white',
+      cardSoft: 'bg-gray-50 border border-gray-200',
+      mutedText: 'text-gray-600',
+      link: 'text-gray-800 hover:text-gray-900',
+      actionButton: 'border-gray-300 text-gray-800 hover:bg-gray-100',
+      reviewCard: 'bg-white',
+    },
+    modern: {
+      pageBg: 'bg-gradient-to-b from-cyan-50 via-white to-indigo-50',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-cyan-500 via-sky-500 to-indigo-600',
+      headerCard: 'bg-white/90 backdrop-blur border border-cyan-100',
+      sectionTitle: 'text-cyan-900',
+      card: 'bg-white border border-cyan-100',
+      cardSoft: 'bg-cyan-50/70 border border-cyan-100',
+      mutedText: 'text-slate-600',
+      link: 'text-cyan-700 hover:text-cyan-900',
+      actionButton: 'border-cyan-300 text-cyan-800 hover:bg-cyan-50',
+      reviewCard: 'bg-white border border-cyan-100',
+    },
+    minimalist: {
+      pageBg: 'bg-gradient-to-b from-stone-50 via-zinc-50 to-white',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-zinc-700 via-stone-700 to-neutral-800',
+      headerCard: 'bg-white/95 border border-stone-200 shadow-sm',
+      sectionTitle: 'text-zinc-900',
+      card: 'bg-white border border-stone-200 shadow-sm',
+      cardSoft: 'bg-white/95 border border-stone-200 shadow-sm',
+      mutedText: 'text-zinc-600',
+      link: 'text-zinc-800 hover:text-black',
+      actionButton: 'border-stone-300 text-zinc-800 hover:bg-stone-50',
+      reviewCard: 'bg-white border border-stone-200 shadow-sm',
+    },
+    minimal: {
+      pageBg: 'bg-white',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-gray-700 to-gray-900',
+      headerCard: 'bg-white border border-gray-200 shadow-none',
+      sectionTitle: 'text-gray-800',
+      card: 'bg-white border border-gray-200 shadow-none',
+      cardSoft: 'bg-white border border-gray-200 shadow-none',
+      mutedText: 'text-gray-500',
+      link: 'text-gray-700 hover:text-gray-900',
+      actionButton: 'border-gray-300 text-gray-700 hover:bg-gray-50',
+      reviewCard: 'bg-white border border-gray-200 shadow-none',
+    },
+    classic: {
+      pageBg: 'bg-blue-50/40',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-blue-700 to-blue-900',
+      headerCard: 'bg-white border border-blue-200',
+      sectionTitle: 'text-blue-900',
+      card: 'bg-white border border-blue-100',
+      cardSoft: 'bg-blue-50/70 border border-blue-200',
+      mutedText: 'text-blue-700',
+      link: 'text-blue-700 hover:text-blue-900',
+      actionButton: 'border-blue-300 text-blue-800 hover:bg-blue-50',
+      reviewCard: 'bg-white border border-blue-100',
+    },
+    classic_ecom: {
+      pageBg: 'bg-gradient-to-b from-slate-50 via-white to-stone-50',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-[#1E3A5F] via-[#1D4E89] to-[#0F2942]',
+      headerCard: 'bg-white border border-slate-200 shadow-sm',
+      sectionTitle: 'text-slate-900',
+      card: 'bg-white border border-slate-200 shadow-sm',
+      cardSoft: 'bg-slate-50/70 border border-slate-200',
+      mutedText: 'text-slate-700',
+      link: 'text-slate-800 hover:text-slate-900',
+      actionButton: 'border-slate-300 text-slate-800 hover:bg-slate-100',
+      reviewCard: 'bg-white border border-slate-200 shadow-sm',
+    },
+    fashion_boutique: {
+      pageBg: 'bg-gradient-to-b from-rose-50 via-white to-amber-50',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-[#8B5E7A] via-[#A56A84] to-[#2E2330]',
+      headerCard: 'bg-white/95 border border-rose-200 shadow-sm',
+      sectionTitle: 'text-rose-950',
+      card: 'bg-white border border-rose-200 shadow-sm',
+      cardSoft: 'bg-gradient-to-r from-rose-50/80 to-amber-50/80 border border-rose-200',
+      mutedText: 'text-rose-700',
+      link: 'text-rose-800 hover:text-rose-950',
+      actionButton: 'border-rose-300 text-rose-900 hover:bg-rose-50',
+      reviewCard: 'bg-white border border-rose-200 shadow-sm',
+    },
+    food_restaurant: {
+      pageBg: 'bg-gradient-to-b from-amber-50 via-white to-lime-50',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-[#6B8E23] via-[#8F6A3E] to-[#2F3E2D]',
+      headerCard: 'bg-white/95 border border-amber-200 shadow-sm',
+      sectionTitle: 'text-amber-950',
+      card: 'bg-white border border-amber-200 shadow-sm',
+      cardSoft: 'bg-gradient-to-r from-amber-50/80 to-lime-50/80 border border-amber-200',
+      mutedText: 'text-amber-700',
+      link: 'text-amber-800 hover:text-amber-950',
+      actionButton: 'border-amber-300 text-amber-900 hover:bg-amber-50',
+      reviewCard: 'bg-white border border-amber-200 shadow-sm',
+    },
+    tech_electronics: {
+      pageBg: 'bg-gradient-to-b from-slate-100 via-white to-cyan-50',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-[#0EA5E9] via-[#1E40AF] to-[#0F172A]',
+      headerCard: 'bg-white/95 border border-cyan-200 shadow-sm',
+      sectionTitle: 'text-slate-950',
+      card: 'bg-white border border-cyan-200 shadow-sm',
+      cardSoft: 'bg-gradient-to-r from-cyan-50/80 to-slate-50/80 border border-cyan-200',
+      mutedText: 'text-slate-700',
+      link: 'text-cyan-800 hover:text-cyan-950',
+      actionButton: 'border-cyan-300 text-cyan-900 hover:bg-cyan-50',
+      reviewCard: 'bg-white border border-cyan-200 shadow-sm',
+    },
+    vibrant: {
+      pageBg: 'bg-gradient-to-br from-orange-50 via-pink-50 to-violet-100',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-orange-500 via-pink-500 to-violet-600',
+      headerCard: 'bg-white/95 border border-orange-200',
+      sectionTitle: 'text-fuchsia-900',
+      card: 'bg-white border border-pink-200',
+      cardSoft: 'bg-gradient-to-r from-orange-50 to-pink-50 border border-pink-200',
+      mutedText: 'text-fuchsia-700',
+      link: 'text-fuchsia-700 hover:text-fuchsia-900',
+      actionButton: 'border-fuchsia-300 text-fuchsia-800 hover:bg-fuchsia-50',
+      reviewCard: 'bg-white border border-violet-200',
+    },
+    professional: {
+      pageBg: 'bg-slate-100',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-slate-700 to-slate-900',
+      headerCard: 'bg-white border border-slate-300',
+      sectionTitle: 'text-slate-900',
+      card: 'bg-white border border-slate-200',
+      cardSoft: 'bg-slate-50 border border-slate-300',
+      mutedText: 'text-slate-600',
+      link: 'text-slate-700 hover:text-slate-900',
+      actionButton: 'border-slate-400 text-slate-800 hover:bg-slate-100',
+      reviewCard: 'bg-white border border-slate-200',
+    },
+    artistic: {
+      pageBg: 'bg-gradient-to-tr from-violet-100 via-rose-50 to-amber-50',
+      heroBg: isWhiteLabel ? whiteLabelHeroBg : 'bg-gradient-to-r from-violet-600 via-fuchsia-500 to-amber-500',
+      headerCard: 'bg-white/90 border border-violet-200',
+      sectionTitle: 'text-violet-900',
+      card: 'bg-white border border-rose-200',
+      cardSoft: 'bg-gradient-to-r from-violet-50 to-rose-50 border border-violet-200',
+      mutedText: 'text-violet-700',
+      link: 'text-violet-700 hover:text-violet-900',
+      actionButton: 'border-violet-300 text-violet-800 hover:bg-violet-50',
+      reviewCard: 'bg-white border border-fuchsia-200',
+    },
+  };
+  const currentTheme = templateStyles[resolvedTemplate] || templateStyles.modern;
+  const backgroundImage = typeof store.storeBackgroundImage === 'string' ? store.storeBackgroundImage : '';
+  const carouselImages = Array.isArray(liveContent?.carouselImages ?? store.carouselImages)
+    ? (liveContent?.carouselImages ?? store.carouselImages)!.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+    : [];
+  const galleryImages = Array.isArray(store.galleryImages)
+    ? store.galleryImages.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+    : [];
+  const aboutUs = typeof (liveContent?.aboutUs ?? store.aboutUs) === 'string' ? String(liveContent?.aboutUs ?? store.aboutUs).trim() : '';
+  const mission = typeof (liveContent?.mission ?? store.mission) === 'string' ? String(liveContent?.mission ?? store.mission).trim() : '';
+  const vision = typeof (liveContent?.vision ?? store.vision) === 'string' ? String(liveContent?.vision ?? store.vision).trim() : '';
+  const productDisplayType = liveThemeFields?.productDisplayType ?? store.productDisplayType ?? 'grid-standard';
+  const productCardAnimation = liveThemeFields?.productCardAnimation ?? store.productCardAnimation ?? 'none';
+  const heroLayout = liveThemeFields?.heroLayout ?? store.heroLayout ?? 'fullscreen';
+  const menuStyle = liveEditorState?.layout?.menuStyle ?? store.menuStyle ?? 'classic';
+  const aboutLayout = liveThemeFields?.aboutLayout ?? store.aboutLayout ?? 'left';
+  const contactFormStyle = liveThemeFields?.contactFormStyle ?? store.contactFormStyle ?? 1;
+  const ratingDisplayType = liveContent?.ratingDisplayType ?? liveThemeFields?.ratingDisplayType ?? store.ratingDisplayType ?? 'stars';
+  const pageLayout = liveThemeFields?.pageLayout ?? store.pageLayout ?? 'contained';
+  const storeCardLayout = liveEditorState?.layout?.storeCardStyle ?? store.storeCardStyle ?? 'standard';
+  const showStoreHeaderChrome = liveEditorState?.layout?.showStoreHeader ?? true;
+  const showNavigationChrome = liveEditorState?.layout?.showNavigation ?? true;
+  const visualStyle = liveThemeFields?.visualStyle ?? store.visualStyle ?? 'rounded';
+  const isEdgeToEdgePage = pageLayout === 'full-width' || storeCardLayout === 'full-width';
+  const sectionOrder: StoreSectionOrder[] =
+    editorPreview && liveEditorState?.sectionOrder?.length
+      ? liveEditorState.sectionOrder
+      : mergeSectionOrderFromProfile(store.sectionOrder);
+
+  const displaySlogan = liveContent?.slogan ?? store.slogan;
+  const displayDescription = liveContent?.description ?? store.description;
+  const displayLogo = liveContent?.logo ?? store.logo;
+  const displayLogoPosition = liveContent?.logoPosition ?? store.logoPosition;
+
+  // Merge backgroundImage + carouselImages into one unified banner list
+  const bannerImages = [
+    ...(backgroundImage ? [backgroundImage] : []),
+    ...carouselImages,
+  ];
+
+  const goToBanner = (idx: number) => {
+    setBannerIndex(idx);
+    if (bannerTimer.current) clearInterval(bannerTimer.current);
+    bannerTimer.current = setInterval(() => {
+      setBannerIndex(i => (i + 1) % bannerImages.length);
+    }, 4000);
+  };
+
+  const tColors = mergeTemplateColors(store.templateColors, liveContent?.templateColors);
+  const colorStyle = tColors ? {
+    '--store-primary': tColors.primary,
+    '--store-secondary': tColors.secondary,
+    '--store-accent': tColors.accent,
+    '--store-bg': tColors.background || '#f8fafc',
+    '--store-surface': tColors.surface || '#ffffff',
+    '--store-text': tColors.textColor || '#1a202c',
+    '--store-highlight': tColors.highlight || '#22d3ee',
+  } as React.CSSProperties : {};
+
+  // Use custom background if set by store owner
+  const pageBackgroundStyle = tColors?.background ? {
+    ...colorStyle,
+    backgroundColor: tColors.background
+  } as React.CSSProperties : colorStyle;
+
+  const showCommerceActions = store.storefrontMode !== 'display';
+
+  const storeStructuredData: Array<Record<string, unknown>> = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'Store',
+      name: store.name,
+      description: store.seoSettings?.metaDescription || store.description || store.slogan || '',
+      image: store.seoSettings?.ogImage || store.logo,
+      url: store.seoSettings?.canonicalBaseUrl || `https://grabio.space/${store.slug || storeId}`,
+      telephone: store.contactInfo?.phone || undefined,
+      email: store.contactInfo?.email || undefined,
+      address: store.location || undefined,
+      sameAs: [
+        store.socialLinks?.facebook,
+        store.socialLinks?.instagram,
+        store.socialLinks?.twitter,
+      ].filter(Boolean),
+      ...(avgRating && reviews.length > 0
+        ? {
+            aggregateRating: {
+              '@type': 'AggregateRating',
+              ratingValue: Number(avgRating.toFixed(1)),
+              reviewCount: reviews.length,
+            },
+          }
+        : {}),
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'ItemList',
+      itemListElement: filteredProducts.slice(0, 50).map((product, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        url: `https://grabio.space/${store.slug || store.id}/product/${product.slug || product.id}`,
+        item: {
+          '@type': 'Product',
+          name: product.name,
+          image: product.image,
+          description: product.description,
+          category: product.category,
+          offers: {
+            '@type': 'Offer',
+            price: Number(product.price || 0).toFixed(2),
+            priceCurrency: store.mainCurrency || 'USD',
+            availability: product.inStock ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+          },
+        },
+      })),
+    },
+  ];
+
+  // Hero banner style - uses heroBg color or primary as fallback
+  const heroBannerStyle = tColors?.heroBg ? {
+    backgroundColor: tColors.heroBg,
+    color: tColors.heroTextColor || '#ffffff'
+  } : (isWhiteLabel && tColors?.primary) ? {
+    backgroundColor: tColors.primary,
+    color: tColors.heroTextColor || '#ffffff'
+  } : {} as React.CSSProperties;
+
+  // Store info card style - uses storeCardBg or surface as fallback
+  const storeCardStyle = tColors?.storeCardBg ? {
+    backgroundColor: tColors.storeCardBg,
+    color: tColors.storeCardTextColor || tColors.textColor || '#1a202c'
+  } : tColors?.surface ? {
+    backgroundColor: tColors.surface,
+    color: tColors.storeCardTextColor || tColors.textColor || '#1a202c'
+  } : {} as React.CSSProperties;
+
+  // Content cards style - uses contentCardBg or surface as fallback  
+  const contentCardStyle = tColors?.contentCardBg ? {
+    backgroundColor: tColors.contentCardBg,
+    color: tColors.contentCardTextColor || tColors.textColor || '#1a202c'
+  } : tColors?.surface ? {
+    backgroundColor: tColors.surface,
+    color: tColors.contentCardTextColor || tColors.textColor || '#1a202c'
+  } : {} as React.CSSProperties;
+
+  // Product cards style - uses surface color
+  const productCardStyle = tColors?.surface ? {
+    backgroundColor: tColors.surface
+  } : {} as React.CSSProperties;
+
+  const productGridClass =
+    productDisplayType === 'grid-large'
+      ? 'grid grid-cols-1 sm:grid-cols-2 gap-6 min-w-0'
+      : productDisplayType === 'list'
+        ? 'grid grid-cols-1 gap-4 min-w-0'
+        : productDisplayType === 'masonry'
+          ? 'columns-1 sm:columns-2 lg:columns-3 gap-4 space-y-4 min-w-0'
+          : 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 min-w-0';
+
+  // Helper to check if section is enabled
+  const isSectionEnabled = (sectionId: StoreSectionId): boolean => {
+    const section = sectionOrder.find(s => s.id === sectionId);
+    return section ? section.enabled : true; // default to enabled if not found
+  };
+
+  // Group sections into rows based on width (full = own row, consecutive half sections = shared row)
+  const groupSectionsIntoRows = (): StoreSectionOrder[][] => {
+    const enabled = sectionOrder
+      .filter(s => s.enabled)
+      .sort((a, b) => a.order - b.order);
+    
+    const rows: StoreSectionOrder[][] = [];
+    let currentRow: StoreSectionOrder[] = [];
+    let currentRowWidth: SectionWidth | null = null;
+    
+    enabled.forEach((section) => {
+      const width = section.width || 'full';
+      
+      if (width === 'full') {
+        // Full width section gets its own row
+        if (currentRow.length > 0) {
+          rows.push(currentRow);
+          currentRow = [];
+          currentRowWidth = null;
+        }
+        rows.push([section]);
+      } else {
+        // Half or Third width sections
+        // Start new row if width type changes or row is full
+        if (currentRowWidth !== null && currentRowWidth !== width) {
+          rows.push(currentRow);
+          currentRow = [];
+          currentRowWidth = null;
+        }
+        
+        currentRow.push(section);
+        currentRowWidth = width;
+        
+        // Check if row is complete
+        const maxSectionsInRow = width === 'half' ? 2 : 3; // 'third' = 3 per row
+        if (currentRow.length === maxSectionsInRow) {
+          rows.push(currentRow);
+          currentRow = [];
+          currentRowWidth = null;
+        }
+      }
+    });
+    
+    // Push any remaining sections
+    if (currentRow.length > 0) {
+      rows.push(currentRow);
+    }
+    
+    return rows;
+  };
+
+  const stripBorderClasses = (className: string) =>
+    className
+      .split(/\s+/)
+      .filter((c) => c && !c.startsWith('border') && c !== 'shadow-sm' && c !== 'shadow-none')
+      .join(' ');
+
+  // Merge page-level layout (Layout tab) with per-section settings (Sections tab)
+  const resolveEffectiveSection = (section: StoreSectionOrder): StoreSectionOrder => {
+    if (editorPreviewLive) {
+      return section;
+    }
+    const container = section.container || 'contained';
+    const edgeToEdge = pageLayout === 'full-width' || container === 'full-width'
+      || (pageLayout === 'hybrid' && section.id === 'hero');
+
+    if (edgeToEdge) {
+      return {
+        ...section,
+        container: 'full-width',
+        // Full-width sections: borders off unless explicitly turned on
+        showBorders: section.showBorders === true,
+      };
+    }
+    return {
+      ...section,
+      container,
+      showBorders: section.showBorders ?? true,
+    };
+  };
+
+  // Helper: Get section wrapper styling (Elementor-style)
+  const getSectionWrapperClasses = (section: StoreSectionOrder) => {
+    const effective = resolveEffectiveSection(section);
+    const container = effective.container || 'contained';
+    const padding = effective.padding || 'medium';
+    const showBg = effective.showBackground ?? true;
+    const showBorders = effective.showBorders ?? true;
+    const edgeToEdge = container === 'full-width';
+    
+    let classes = '';
+    
+    // Padding
+    if (padding === 'none') classes += ' p-0';
+    else if (padding === 'small') classes += ' p-4';
+    else if (padding === 'medium') classes += ' p-6';
+    else if (padding === 'large') classes += ' p-12';
+    
+    // Background (cardSoft includes borders — strip them when borders are off)
+    if (showBg) {
+      classes += showBorders
+        ? ` ${currentTheme.cardSoft}`
+        : ` ${stripBorderClasses(currentTheme.cardSoft)}`;
+    } else if (editorPreview) {
+      classes += ' bg-transparent';
+    }
+    
+    // Borders and rounded corners
+    if (showBorders) {
+      classes += ' rounded-xl border-2 shadow-sm';
+    } else {
+      classes += ' border-0 shadow-none';
+      if (edgeToEdge) classes += ' rounded-none';
+    }
+
+    // Animation
+    const animation = effective.animation || 'fade';
+    if (animation === 'fade') classes += ' section-anim-fade';
+    else if (animation === 'slide-up') classes += ' section-anim-slide-up';
+    else if (animation === 'zoom') classes += ' section-anim-zoom';
+    
+    return classes.trim();
+  };
+
+  const parseCustomCssDeclarations = (customCss?: string): React.CSSProperties => {
+    if (!customCss) return {};
+    const allowedProps = new Set([
+      'background-size', 'background-position', 'background-repeat',
+      'border-style', 'border-width', 'border-color', 'border-radius',
+      'box-shadow', 'opacity', 'transform', 'filter',
+      'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+      'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    ]);
+
+    const style: Record<string, string | number> = {};
+    customCss
+      .split(';')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .forEach((entry) => {
+        const [rawProp, ...valueParts] = entry.split(':');
+        if (!rawProp || valueParts.length === 0) return;
+        const prop = rawProp.trim().toLowerCase();
+        const value = valueParts.join(':').trim();
+        if (!allowedProps.has(prop) || !value) return;
+        const camel = prop.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        style[camel] = value;
+      });
+    return style as React.CSSProperties;
+  };
+
+  const getSectionWrapperStyle = (section: StoreSectionOrder): React.CSSProperties => {
+    const baseStyle: React.CSSProperties = {};
+    if (section.backgroundImage) {
+      baseStyle.backgroundImage = `url(${section.backgroundImage})`;
+      baseStyle.backgroundSize = 'cover';
+      baseStyle.backgroundPosition = 'center';
+      baseStyle.backgroundRepeat = 'no-repeat';
+    }
+    return {
+      ...baseStyle,
+      ...parseCustomCssDeclarations(section.customCss),
+    };
+  };
+
+  // Helper: Get section container wrapper classes
+  const getSectionContainerClasses = (section: StoreSectionOrder) => {
+    const effective = resolveEffectiveSection(section);
+    const container = effective.container || 'contained';
+    
+    if (container === 'full-width') {
+      // Break out of parent container when page layout is contained
+      if (pageLayout === 'contained') {
+        return 'w-screen relative left-1/2 -translate-x-1/2';
+      }
+      return 'w-full';
+    }
+    if (container === 'wide') {
+      return 'max-w-screen-2xl mx-auto px-4';
+    }
+    return 'max-w-7xl mx-auto px-4';
+  };
+
+  const sectionPreviewKey = (section: StoreSectionOrder) =>
+    [
+      section.id,
+      section.enabled,
+      section.width,
+      section.container,
+      section.padding,
+      section.animation,
+      section.showBorders,
+      section.showBackground,
+    ].join('-');
+
+  const renderCategoryFilters = () => {
+    if (!storeBasePath || productCategories.length === 0) return null;
+
+    return (
+      <div className="mb-4 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => navigate(storeBasePath)}
+          className={`px-3 py-1 rounded-full text-xs border transition-colors ${
+            !selectedCategory
+              ? 'bg-gray-900 text-white border-gray-900'
+              : 'bg-white text-gray-700 border-gray-300 hover:border-gray-500'
+          }`}
+        >
+          All
+        </button>
+        {productCategories.map((category) => {
+          const isActive = selectedCategory === category;
+          return (
+            <button
+              type="button"
+              key={category}
+              onClick={() => navigate(`${storeBasePath}/category/${generateSlug(category)}`)}
+              className={`px-3 py-1 rounded-full text-xs border transition-colors ${
+                isActive
+                  ? 'bg-gray-900 text-white border-gray-900'
+                  : 'bg-white text-gray-700 border-gray-300 hover:border-gray-500'
+              }`}
+            >
+              {category}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderEditorSectionPlaceholder = (title: string, hint: string) => (
+    <div>
+      <h2 className={`text-xl font-semibold mb-4 ${currentTheme.sectionTitle}`}>{title}</h2>
+      <div className="rounded-lg border-2 border-dashed border-gray-300 bg-white/60 px-4 py-12 text-center">
+        <p className="text-sm text-gray-600">{hint}</p>
+      </div>
+    </div>
+  );
+
+  // Render individual section by ID
+  const renderSection = (sectionId: StoreSectionId) => {
+    switch (sectionId) {
+      case 'about': {
+        const aboutSection = sectionOrder.find(s => s.id === 'about');
+        const aboutBorderless = aboutSection ? !resolveEffectiveSection(aboutSection).showBorders : false;
+        if ((aboutUs || mission || vision) && aboutLayout !== 'off') {
+          return (
+            <div>
+              <h2 className={`text-xl font-semibold mb-4 ${currentTheme.sectionTitle}`}>About Us</h2>
+              <div className={aboutLayout === 'centered' ? 'space-y-4' : 'grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch'}>
+                {[
+                  { title: 'Who We Are', text: aboutUs },
+                  { title: 'Mission', text: mission },
+                  { title: 'Vision', text: vision },
+                ].filter(c => c.text).map(c => (
+                  <Card key={c.title} className={`${aboutBorderless ? stripBorderClasses(currentTheme.cardSoft) : currentTheme.cardSoft} flex flex-col ${aboutBorderless ? 'border-0 shadow-none' : ''} ${aboutLayout === 'centered' ? 'max-w-3xl mx-auto' : ''}`}>
+                    <CardContent className="p-4 flex flex-col flex-1">
+                      <h3 className={`font-semibold mb-2 ${aboutLayout === 'centered' ? 'text-center' : ''}`}>{c.title}</h3>
+                      <p className={`text-sm whitespace-pre-line ${currentTheme.mutedText} line-clamp-6 flex-1 ${aboutLayout === 'centered' ? 'text-center' : ''}`}>{c.text}</p>
+                      {c.text.length > 200 && (
+                        <button
+                          onClick={() => setReadMoreContent({ title: c.title, text: c.text })}
+                          className={`mt-3 text-xs font-semibold underline ${aboutLayout === 'centered' ? 'self-center' : 'self-start'} ${currentTheme.link}`}
+                        >
+                          Read More
+                        </button>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          );
+        }
+        if (editorPreview) {
+          return renderEditorSectionPlaceholder(
+            'About Us',
+            'Your story, mission, and vision will show here. Section style updates live in this preview.',
+          );
+        }
+        return null;
+      }
+
+      case 'announcements':
+        if (announcements.length > 0) {
+          return (
+            <div>
+              <h2 className={`text-xl font-semibold mb-4 ${currentTheme.sectionTitle}`}>Announcements</h2>
+              <div className="space-y-4">
+                {announcements.map((announcement) => (
+                  <Alert key={announcement.id} className={currentTheme.card}>
+                    <AlertTitle className={currentTheme.sectionTitle}>{announcement.title}</AlertTitle>
+                    <AlertDescription>{announcement.message}</AlertDescription>
+                  </Alert>
+                ))}
+              </div>
+            </div>
+          );
+        }
+        if (editorPreview) {
+          return renderEditorSectionPlaceholder(
+            'Announcements',
+            'Store announcements will appear here when you add them.',
+          );
+        }
+        return null;
+
+      case 'products':
+        return (
+          <div>
+            <h2 className={`text-xl font-semibold mb-4 ${currentTheme.sectionTitle}`}>Products</h2>
+            {renderCategoryFilters()}
+            {filteredProducts.length > 0 ? (
+              <div className={productGridClass}>
+                {filteredProducts.map((product, index) => (
+                  <div key={product.id} className={`min-w-0 ${productDisplayType === 'masonry' ? 'break-inside-avoid mb-4' : ''}`} style={productDisplayType === 'masonry' ? { animationDelay: `${index * 45}ms` } : undefined}>
+                    <ProductCard product={product} displayType={productDisplayType} animation={productCardAnimation} whatsappNumber={store.subscriptionTier !== 'trial' ? store.whatsappBusiness : undefined} storeName={store.name} currency={store.mainCurrency} showCommerceActions={showCommerceActions} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Card>
+                <CardContent className="flex items-center justify-center h-40">
+                  <p className="text-gray-500">No products found for this category.</p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        );
+
+      case 'gallery':
+        if (galleryImages.length > 0) {
+          return (
+            <div>
+              <h2 className={`text-xl font-semibold mb-4 ${currentTheme.sectionTitle}`}>Gallery</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {galleryImages.map((url, index) => (
+                  <img
+                    key={`${url}-${index}`}
+                    src={url}
+                    alt={`Store gallery ${index + 1}`}
+                    className="w-full h-36 md:h-44 rounded-lg object-cover border"
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        }
+        if (editorPreview) {
+          return renderEditorSectionPlaceholder(
+            'Gallery',
+            'Gallery images from your store profile will display here.',
+          );
+        }
+        return null;
+
+      case 'reviews':
+        if (editorPreview && reviews.length === 0) {
+          return renderEditorSectionPlaceholder(
+            'Reviews',
+            'Customer reviews and ratings appear here on your live store.',
+          );
+        }
+        return (
+          <div>
+            <h2 className={`text-xl font-semibold mb-4 ${currentTheme.sectionTitle}`}>Reviews</h2>
+            {reviews.length > 0 ? (
+              <div className="space-y-4">
+                {reviews.map(r => (
+                  <div key={r.id} className={`p-4 rounded shadow-sm ${currentTheme.reviewCard}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="font-semibold">{r.userName || 'Anonymous'}</div>
+                        <div className="text-yellow-500 flex items-center">{Array.from({length: r.rating}).map((_,i)=>(<Star key={i} size={14}/>))}</div>
+                      </div>
+                      <div className={`text-sm ${currentTheme.mutedText}`}>
+                        {(() => {
+                          if (!r.createdAt) return 'Recently';
+                          const date = new Date(String(r.createdAt));
+                          return Number.isNaN(date.getTime()) ? 'Recently' : date.toLocaleDateString();
+                        })()}
+                      </div>
+                    </div>
+                    {r.comment && <p className={`mt-2 ${currentTheme.mutedText}`}>{r.comment}</p>}
+                    {!editorPreview && user && user.id === r.userId && (
+                      <div className="mt-3 flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => {
+                          setEditingId(r.id || null);
+                          setEditRating(r.rating || 5);
+                          setEditComment(r.comment || '');
+                        }}>Edit</Button>
+                        <Button size="sm" variant="ghost" onClick={async () => {
+                          if (!r.id || !id) return;
+                          try {
+                            const db = getFirestore();
+                            await runTransaction(db, async (tx) => {
+                              const storeRef = doc(db, 'storeProfiles', id);
+                              const reviewRef = doc(db, 'storeReviews', r.id!);
+                              const [storeSnap, reviewSnap] = await Promise.all([tx.get(storeRef), tx.get(reviewRef)]);
+                              if (!reviewSnap.exists()) throw new Error('Review not found');
+                              const oldRating = reviewSnap.data().rating || 0;
+                              const prevCount = storeSnap.exists() ? (storeSnap.data().ratingCount || 0) : 0;
+                              const prevAvg = storeSnap.exists() ? (storeSnap.data().rating || 0) : 0;
+                              const newCount = Math.max(0, prevCount - 1);
+                              if (newCount === 0) {
+                                tx.update(storeRef, { rating: 0, ratingCount: 0 });
+                              } else {
+                                const newAvg = ((prevAvg * prevCount) - oldRating) / newCount;
+                                tx.update(storeRef, { rating: newAvg, ratingCount: newCount });
+                              }
+                              tx.delete(reviewRef);
+                            });
+                            toast('Review deleted');
+                            fetchReviews();
+                            const db2 = getFirestore();
+                            const sref = doc(db2, 'storeProfiles', id);
+                            const ssnap = await getDoc(sref);
+                            if (ssnap.exists()) setStore({ id, ...ssnap.data() } as Store);
+                          } catch (err) {
+                            console.error('Failed to delete review', err);
+                            toast('Failed to delete review');
+                          }
+                        }}>Delete</Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={`p-6 rounded border text-center ${currentTheme.mutedText}`}>
+                No reviews yet. Be the first to review!
+              </div>
+            )}
+
+            {!editorPreview && (
+              <div className={`mt-6 p-4 rounded shadow-sm ${currentTheme.card}`}>
+                <h3 className="font-semibold mb-2">Write a review</h3>
+                {!user ? (
+                  <div className="text-gray-600">Please sign in to leave a review.</div>
+                ) : (
+                  <form onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!id || !user || isSubmittingReview) return;
+                    setIsSubmittingReview(true);
+                    try {
+                      const db = getFirestore();
+                      await runTransaction(db, async (tx) => {
+                        const reviewRef = doc(collection(db, 'storeReviews'));
+                        const reviewData: Partial<StoreReview> = {
+                          storeId: id,
+                          userId: user.id,
+                          userName: user.name,
+                          rating: Number(newRating),
+                          comment: newComment,
+                          createdAt: serverTimestamp(),
+                        };
+                        tx.set(reviewRef, reviewData);
+                      });
+                      toast('Review submitted');
+                      setNewComment('');
+                      setNewRating(5);
+                      await fetchReviews();
+                      const db2 = getFirestore();
+                      const sref = doc(db2, 'storeProfiles', id);
+                      const ssnap = await getDoc(sref);
+                      if (ssnap.exists()) setStore({ id, ...ssnap.data() } as Store);
+                    } catch (err) {
+                      console.error('Failed to submit review', err);
+                      toast.error('Failed to submit review');
+                    } finally {
+                      setIsSubmittingReview(false);
+                    }
+                  }}>
+                    <div className="flex items-center gap-4 mb-3">
+                      <label className="text-sm">Rating</label>
+                      <select value={newRating} onChange={(e) => setNewRating(Number(e.target.value))} className="border px-2 py-1 rounded">
+                        {[5, 4, 3, 2, 1].map(n => <option key={n} value={n}>{n} star{n > 1 ? 's' : ''}</option>)}
+                      </select>
+                    </div>
+                    <textarea value={newComment} onChange={(e) => setNewComment(e.target.value)} className="w-full border rounded p-2 mb-3" placeholder="Write your comment (optional)" />
+                    <div className="text-right">
+                      <Button type="submit" disabled={isSubmittingReview}>{isSubmittingReview ? 'Submitting...' : 'Submit review'}</Button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+          </div>
+        );
+
+      case 'contact':
+        return <StoreContactForm storeId={storeId} storeName={store.name} theme={currentTheme} formStyle={contactFormStyle} />;
+
+      case 'hero':
+        // Hero/Banner section with different layout options
+        if (heroLayout === 'minimal') {
+          return (
+            <div className="p-4 md:p-5 flex items-center justify-between gap-4" style={heroBannerStyle}>
+              <h2 className="text-xl md:text-2xl font-bold" style={{ color: heroBannerStyle.color }}>{store.name}</h2>
+              {displaySlogan && <p className="text-sm opacity-90 hidden md:block" style={{ color: heroBannerStyle.color }}>{displaySlogan}</p>}
+            </div>
+          );
+        } else if (heroLayout === 'centered') {
+          return (
+            <div className="p-8 md:p-12 text-center" style={heroBannerStyle}>
+              <h2 className=" text-3xl md:text-4xl font-bold" style={{ color: heroBannerStyle.color }}>{store.name}</h2>
+              {displaySlogan && <p className="text-base md:text-lg opacity-90 mt-3 max-w-2xl mx-auto" style={{ color: heroBannerStyle.color }}>{displaySlogan}</p>}
+            </div>
+          );
+        } else if (heroLayout === 'split' && bannerImages.length > 0) {
+          return (
+            <div className="relative overflow-hidden grid grid-cols-1 md:grid-cols-2 min-h-[280px]">
+              <div className="relative h-64 md:h-full">
+                {bannerImages.map((url, idx) => (
+                  <img
+                    key={url}
+                    src={url}
+                    alt={`Banner ${idx + 1}`}
+                    className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${idx === bannerIndex ? 'opacity-100' : 'opacity-0'}`}
+                  />
+                ))}
+              </div>
+              <div className="p-8 flex flex-col justify-center" style={heroBannerStyle}>
+                <h2 className="text-3xl font-bold" style={{ color: heroBannerStyle.color }}>{store.name}</h2>
+                {displaySlogan && <p className="text-base opacity-90 mt-3" style={{ color: heroBannerStyle.color }}>{displaySlogan}</p>}
+              </div>
+            </div>
+          );
+        } else if (bannerImages.length > 0) {
+          // Fullscreen with image carousel
+          return (
+            <div className="relative overflow-hidden h-64 md:h-96">
+              {bannerImages.map((url, idx) => (
+                <img
+                  key={url}
+                  src={url}
+                  alt={`Banner ${idx + 1}`}
+                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${idx === bannerIndex ? 'opacity-100' : 'opacity-0'}`}
+                />
+              ))}
+              {/* Slogan overlay */}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent flex items-end">
+                <div className="p-6 text-white">
+                  {displaySlogan && <p className="text-base md:text-xl font-semibold drop-shadow">{displaySlogan}</p>}
+                </div>
+              </div>
+              {/* Carousel controls */}
+              {bannerImages.length > 1 && (
+                <>
+                  <button
+                    onClick={() => goToBanner((bannerIndex - 1 + bannerImages.length) % bannerImages.length)}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 text-white rounded-full w-10 h-10 flex items-center justify-center text-2xl"
+                  >‹</button>
+                  <button
+                    onClick={() => goToBanner((bannerIndex + 1) % bannerImages.length)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 text-white rounded-full w-10 h-10 flex items-center justify-center text-2xl"
+                  >›</button>
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-2">
+                    {bannerImages.map((_, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => goToBanner(idx)}
+                        className={`w-2.5 h-2.5 rounded-full transition-all ${idx === bannerIndex ? 'bg-white scale-125' : 'bg-white/50'}`}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        } else {
+          // No images - solid color banner
+          return (
+            <div className="p-6 md:p-8" style={heroBannerStyle}>
+              <h2 className="text-2xl md:text-3xl font-bold" style={{ color: heroBannerStyle.color }}>{store.name}</h2>
+              {displaySlogan && <p className="text-sm md:text-base opacity-90 mt-2" style={{ color: heroBannerStyle.color }}>{displaySlogan}</p>}
+            </div>
+          );
+        }
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="min-h-screen" style={pageBackgroundStyle}>
+      <style>{`
+        @keyframes sectionFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes sectionSlideUp {
+          from { opacity: 0; transform: translateY(14px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes sectionZoomIn {
+          from { opacity: 0; transform: scale(0.97); }
+          to { opacity: 1; transform: scale(1); }
+        }
+        .section-anim-fade { animation: sectionFadeIn 350ms ease-out both; }
+        .section-anim-slide-up { animation: sectionSlideUp 420ms ease-out both; }
+        .section-anim-zoom { animation: sectionZoomIn 360ms ease-out both; }
+      `}</style>
+      {store && (
+        <SEOHead
+          title={store.seoSettings?.metaTitleSuffix
+            ? `${selectedCategory ? `${store.name} - ${selectedCategory}` : store.name} ${store.seoSettings.metaTitleSuffix}`
+            : (selectedCategory ? `${store.name} - ${selectedCategory}` : store.name)}
+          description={store.seoSettings?.metaDescription || store.description || store.slogan || `Shop at ${store.name} on Grabio`}
+          image={store.seoSettings?.ogImage || store.logo}
+          url={store.seoSettings?.canonicalBaseUrl || (selectedCategory
+            ? `https://grabio.space/${store.slug || storeId}/category/${generateSlug(selectedCategory)}`
+            : `https://grabio.space/${store.slug || storeId}`)}
+          keywords={store.seoSettings?.keywords}
+          robotsIndex={store.seoSettings?.robotsIndex ?? true}
+          robotsFollow={store.seoSettings?.robotsFollow ?? true}
+          twitterHandle={store.seoSettings?.twitterHandle}
+          facebookAppId={store.metaIntegrationSettings?.facebookAppId}
+          structuredData={storeStructuredData}
+        />
+      )}
+      {/* Read More Modal */}
+      {readMoreContent && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setReadMoreContent(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 px-6 py-4 border-b shrink-0 min-w-0">
+              <ClampedText
+                text={readMoreContent.title}
+                maxLines={2}
+                className="text-xl font-bold min-w-0 flex-1"
+                as="h2"
+              />
+              <button onClick={() => setReadMoreContent(null)} className="text-gray-400 hover:text-gray-700 text-2xl leading-none shrink-0">&times;</button>
+            </div>
+            <div className="overflow-y-auto px-6 py-4 min-h-0 flex-1">
+              <p className="text-sm whitespace-pre-line text-gray-700 leading-relaxed break-words">{readMoreContent.text}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!editorPreview && (
+      <Header
+        storeName={store.name}
+        storeLogo={displayLogo}
+        storeSlug={store.slug}
+        logoPosition={displayLogoPosition}
+        primaryColor={store.templateColors?.primary}
+        subscriptionTier={store.subscriptionTier}
+        hasCustomDomain={!!store.customDomain}
+        hasImportedDesign={store.hasImportedDesign}
+      />
+      )}
+      
+      <main className={pageLayout === 'contained' ? 'container mx-auto px-4 py-6' : 'py-6'}>
+        {/* Store Header */}
+        {showStoreHeaderChrome && (
+        <EditorRegionShell
+          id="store_header"
+          editorPreview={editorPreview}
+          highlightedId={editorHighlightSection}
+          className="mb-6"
+        >
+        <div
+          className={[
+            storeCardLayout !== 'minimal' && !isEdgeToEdgePage ? 'rounded-lg shadow-sm p-6 mb-0' : 'mb-0',
+            storeCardLayout === 'minimal' ? 'p-0' : isEdgeToEdgePage ? 'py-4 px-0' : '',
+            isEdgeToEdgePage || storeCardLayout === 'minimal'
+              ? stripBorderClasses(currentTheme.headerCard)
+              : currentTheme.headerCard,
+          ].join(' ')}
+          style={storeCardStyle}
+        >
+          <div className={isEdgeToEdgePage ? 'container mx-auto px-4' : ''}>
+            <div className={`flex ${storeCardLayout === 'split' ? 'grid md:grid-cols-2 gap-8' : 'flex-col md:flex-row'} items-center md:items-start gap-6`}>
+              <img 
+                src={displayLogo} 
+                alt={store.name} 
+                className="h-24 w-24 object-cover rounded-full border-4 border-white shadow-sm"
+              />
+              <div className="flex-1 text-center md:text-left">
+              <div className="flex items-center justify-center md:justify-start gap-3 mb-3">
+                {avgRating !== null ? (
+                  <div className="flex items-center text-yellow-500">
+                    {ratingDisplayType === 'pill' ? (
+                      <>
+                        <span className="bg-yellow-400 text-white text-xs font-bold px-2.5 py-1 rounded-full">★ {avgRating.toFixed(1)}</span>
+                        <span className={`text-sm ml-2 ${currentTheme.mutedText}`}>/ 5.0 · {reviews.length} reviews</span>
+                      </>
+                    ) : ratingDisplayType === 'number' ? (
+                      <>
+                        <span className="text-2xl font-black text-yellow-500">{avgRating.toFixed(1)}</span>
+                        <span className="text-sm ml-2">★★★★☆</span>
+                        <span className={`text-sm ml-2 ${currentTheme.mutedText}`}>({reviews.length})</span>
+                      </>
+                    ) : ratingDisplayType === 'minimal' ? (
+                      <span className={`text-sm ${currentTheme.mutedText}`}>
+                        <span className="font-semibold text-foreground">{Math.round((avgRating / 5) * 100)}% positive</span> based on {reviews.length} reviews
+                      </span>
+                    ) : (
+                      <>
+                        <Star size={16} className="mr-2" />
+                        <span className="font-semibold">{avgRating.toFixed(1)}</span>
+                        <span className={`text-sm ml-2 ${currentTheme.mutedText}`}>({reviews.length} reviews)</span>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className={`text-sm ${currentTheme.mutedText}`}>No ratings yet</div>
+                )}
+                <Button size="sm" variant={isFollowing ? 'ghost' : 'outline'} className={currentTheme.actionButton} onClick={async () => {
+                  if (!user) { toast('Please sign in to follow stores'); return; }
+                  try {
+                    if (isFollowing) await unfollowStore(store.id); else await followStore(store.id);
+                  } catch (err) {
+                    const maybeErr = err as { code?: string; name?: string; message?: string } | undefined;
+                    const code = maybeErr?.code || maybeErr?.name || '';
+                    const msg = maybeErr?.message || String(err);
+                    console.error('Follow button failed', { err });
+                    const full = code ? `${code}: ${msg}` : msg;
+                    pushDebugLog('Follow failed', full, { storeId: store.id, err });
+                    toast.error('Failed to update follow status: ' + full);
+                  }
+                }}>
+                  {isFollowing ? 'Following' : 'Follow'}
+                </Button>
+              </div>
+              <p className="mb-4 text-sm" style={{ color: storeCardStyle.color }}>{displayDescription}</p>
+              
+              <div className="flex flex-wrap justify-center md:justify-start gap-4" style={{ color: storeCardStyle.color }}>
+                <div className="flex items-center">
+                  <MapPin size={18} className="mr-2" />
+                  {store.location}
+                </div>
+                
+                {store.website && (
+                  <a href={store.website} target="_blank" rel="noopener noreferrer" className={`flex items-center hover:underline ${currentTheme.link}`}>
+                    <Globe size={18} className="mr-2" />
+                    Website
+                  </a>
+                )}
+                
+                {store.contactInfo?.phone && (
+                  <div className={`flex items-center ${currentTheme.mutedText}`}>
+                    <Phone size={18} className="mr-2" />
+                    {store.contactInfo.phone}
+                  </div>
+                )}
+                
+                {store.contactInfo?.email && (
+                  <div className={`flex items-center ${currentTheme.mutedText}`}>
+                    <Mail size={18} className="mr-2" />
+                    {store.contactInfo.email}
+                  </div>
+                )}
+              </div>
+              
+              <div className="flex mt-4 justify-center md:justify-start gap-3">
+                {store.socialLinks?.facebook && (
+                  <a href={store.socialLinks.facebook} target="_blank" rel="noopener noreferrer" className={currentTheme.link} title="Facebook">
+                    <Facebook size={22} />
+                  </a>
+                )}
+                {store.socialLinks?.instagram && (
+                  <a href={store.socialLinks.instagram} target="_blank" rel="noopener noreferrer" className={currentTheme.link} title="Instagram">
+                    <Instagram size={22} />
+                  </a>
+                )}
+                {store.socialLinks?.twitter && (
+                  <a href={store.socialLinks.twitter} target="_blank" rel="noopener noreferrer" className={currentTheme.link} title="Twitter">
+                    <Twitter size={22} />
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        </div>
+        </EditorRegionShell>
+        )}
+        
+        {/* Page navigation + home sections */}
+        <div className={pageLayout === 'contained' ? '' : pageLayout === 'hybrid' ? 'container mx-auto px-4' : ''}>
+        
+        {/* Page Navigation Bar */}
+        {showNavigationChrome && (() => {
+          const customPages = Array.isArray(store.customPages) ? store.customPages : [];
+          const hasAbout = !!(store.aboutUs || store.mission || store.vision);
+          const hasContact = !!(store.contactInfo?.phone || store.contactInfo?.email || store.location || store.website || store.socialLinks?.facebook || store.socialLinks?.instagram || store.socialLinks?.twitter || store.socialLinks?.whatsapp);
+          const navPages = [
+            { id: 'home', label: 'Home' },
+            ...(hasAbout ? [{ id: 'about', label: 'About Us' }] : []),
+            { id: 'products', label: 'Products' },
+            ...customPages.sort((a, b) => a.order - b.order).map(p => ({ id: p.id, label: p.name })),
+            ...(hasContact ? [{ id: 'contact', label: 'Contact Us' }] : []),
+          ];
+          if (navPages.length <= 1) return null;
+          return (
+            <EditorRegionShell
+              id="navigation"
+              editorPreview={editorPreview}
+              highlightedId={editorHighlightSection}
+              className="mb-6"
+            >
+            <div className={`flex gap-1 overflow-x-auto rounded-lg p-1 ${menuStyle === 'bold' ? 'bg-[var(--store-primary)]/20' : menuStyle === 'sticky-glass' ? 'backdrop-blur bg-white/70 border border-white/50 sticky top-2 z-20' : currentTheme.cardSoft}`}>
+              {navPages.map(p => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    if (editorPreview) {
+                      window.parent.postMessage(
+                        { type: 'grabio:section-select', sectionId: 'navigation' },
+                        '*',
+                      );
+                      return;
+                    }
+                    setActivePage(p.id);
+                  }}
+                  className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
+                    activePage === p.id
+                      ? `${menuStyle === 'bold' ? 'bg-[var(--store-primary)] text-white shadow' : 'bg-white shadow text-gray-900'}`
+                      : `${menuStyle === 'bold' ? 'text-[var(--store-text)] hover:bg-white/50' : `${currentTheme.mutedText} hover:bg-white/60`}`
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+              {store.enabledModules?.blog_publisher && store.slug && !editorPreview && (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/store/${store.slug}/blog`)}
+                  className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${menuStyle === 'bold' ? 'text-[var(--store-text)] hover:bg-white/50' : `${currentTheme.mutedText} hover:bg-white/60`}`}
+                >
+                  Blog
+                </button>
+              )}
+            </div>
+            </EditorRegionShell>
+          );
+        })()}
+
+        {/* Page Content */}
+        {activePage === 'home' && (
+          <div className="space-y-6">
+            {groupSectionsIntoRows().map((row, rowIdx) => {
+              const effectiveRow = row.map(resolveEffectiveSection);
+              const allFullWidth = effectiveRow.every(s => (s.container || 'contained') === 'full-width');
+              
+              return (
+                <div key={rowIdx} className={allFullWidth ? 'w-full' : ''}>
+                  <div
+                    className={
+                      row.length === 1 
+                        ? getSectionContainerClasses(row[0])
+                        : row.length === 2 
+                        ? `grid grid-cols-1 md:grid-cols-2 gap-6 ${!allFullWidth ? 'max-w-7xl mx-auto px-4' : ''}`
+                        : `grid grid-cols-1 md:grid-cols-3 gap-6 ${!allFullWidth ? 'max-w-7xl mx-auto px-4' : ''}`
+                    }
+                  >
+                    {row.map((section) => {
+                      const content = renderSection(section.id);
+                      if (!content) return null;
+                      return (
+                        <EditorRegionShell
+                          key={sectionPreviewKey(section)}
+                          id={section.id}
+                          editorPreview={editorPreview}
+                          highlightedId={editorHighlightSection}
+                          className={`${getSectionWrapperClasses(section)}`}
+                          style={getSectionWrapperStyle(section)}
+                        >
+                          {content}
+                        </EditorRegionShell>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* About Us Page */}
+        {activePage === 'about' && (
+          <div className="space-y-6">
+            <h2 className={`text-2xl font-bold ${currentTheme.sectionTitle}`}>About Us</h2>
+            <div className={aboutLayout === 'centered' ? 'space-y-4' : 'grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch'}>
+              {[
+                { title: 'Who We Are', text: aboutUs },
+                { title: 'Mission', text: mission },
+                { title: 'Vision', text: vision },
+              ].filter(c => c.text).map(c => (
+                <Card key={c.title} className={`${currentTheme.cardSoft} flex flex-col ${aboutLayout === 'centered' ? 'max-w-3xl mx-auto' :  ''}`} style={contentCardStyle}>
+                  <CardContent className="p-6 flex flex-col flex-1">
+                    <h3 className={`text-lg font-semibold mb-3 ${aboutLayout === 'centered' ? 'text-center' : ''}`} style={{ color: contentCardStyle.color }}>{c.title}</h3>
+                    <p className={`text-sm whitespace-pre-line leading-relaxed flex-1 ${aboutLayout === 'centered' ? 'text-center' : ''}`} style={{ color: contentCardStyle.color }}>{c.text}</p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Products Page */}
+        {activePage === 'products' && (
+          <div className="space-y-4">
+            <h2 className={`text-2xl font-bold ${currentTheme.sectionTitle}`}>Products</h2>
+            {renderCategoryFilters()}
+            {filteredProducts.length > 0 ? (
+              <div className={productGridClass}>
+                {filteredProducts.map((product, index) => (
+                  <div key={product.id} className={`min-w-0 ${productDisplayType === 'masonry' ? 'break-inside-avoid mb-4' : ''}`} style={productDisplayType === 'masonry' ? { animationDelay: `${index * 45}ms` } : undefined}>
+                  <ProductCard product={product} displayType={productDisplayType} animation={productCardAnimation} whatsappNumber={store.subscriptionTier !== 'trial' ? store.whatsappBusiness : undefined} storeName={store.name} currency={store.mainCurrency} showCommerceActions={showCommerceActions} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Card className={currentTheme.card}>
+                <CardContent className="flex items-center justify-center h-40">
+                  <p className="text-gray-500">No products found for this category.</p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* Custom Pages */}
+        {Array.isArray(store.customPages) && store.customPages.map(page => activePage === page.id && (
+          <div key={page.id} className="space-y-6">
+            <h2 className={`text-2xl font-bold ${currentTheme.sectionTitle}`}>{page.name}</h2>
+            {page.image && (
+              <div className="rounded-xl overflow-hidden shadow-md">
+                <img src={page.image} alt={page.name} className="w-full max-h-80 object-cover" />
+              </div>
+            )}
+            {page.content && (
+              <Card className={currentTheme.cardSoft} style={contentCardStyle}>
+                <CardContent className="p-6">
+                  <p className="text-sm whitespace-pre-line leading-relaxed" style={{ color: contentCardStyle.color }}>{page.content}</p>
+                </CardContent>
+              </Card>
+            )}
+            {!page.image && !page.content && (
+              <p className={`${currentTheme.mutedText}`}>This page has no content yet.</p>
+            )}
+          </div>
+        ))}
+
+        {/* Contact Us Page */}
+        {activePage === 'contact' && (
+          <div className="space-y-6">
+            <h2 className={`text-2xl font-bold ${currentTheme.sectionTitle}`}>Contact Us</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Contact Details Card */}
+              <Card className={currentTheme.cardSoft} style={contentCardStyle}>
+                <CardContent className="p-6 space-y-5">
+                  {store.location && (
+                    <div className="flex items-start gap-4">
+                      <div className="rounded-full bg-white/80 shadow p-2 mt-0.5"><MapPin size={18} style={{ color: contentCardStyle.color, opacity: 0.7 }} /></div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-0.5" style={{ color: contentCardStyle.color, opacity: 0.6 }}>Location</p>
+                        <p className="text-sm" style={{ color: contentCardStyle.color }}>{store.location}</p>
+                      </div>
+                    </div>
+                  )}
+                  {store.contactInfo?.phone && (
+                    <div className="flex items-start gap-4">
+                      <div className="rounded-full bg-white/80 shadow p-2 mt-0.5"><Phone size={18} style={{ color: contentCardStyle.color, opacity: 0.7 }} /></div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-0.5" style={{ color: contentCardStyle.color, opacity: 0.6 }}>Phone</p>
+                        <a href={`tel:${store.contactInfo.phone}`} className="text-sm hover:underline" style={{ color: contentCardStyle.color }}>{store.contactInfo.phone}</a>
+                      </div>
+                    </div>
+                  )}
+                  {store.contactInfo?.email && (
+                    <div className="flex items-start gap-4">
+                      <div className="rounded-full bg-white/80 shadow p-2 mt-0.5"><Mail size={18} style={{ color: contentCardStyle.color, opacity: 0.7 }} /></div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-0.5" style={{ color: contentCardStyle.color, opacity: 0.6 }}>Email</p>
+                        <a href={`mailto:${store.contactInfo.email}`} className="text-sm hover:underline break-all" style={{ color: contentCardStyle.color }}>{store.contactInfo.email}</a>
+                      </div>
+                    </div>
+                  )}
+                  {store.website && (
+                    <div className="flex items-start gap-4">
+                      <div className="rounded-full bg-white/80 shadow p-2 mt-0.5"><Globe size={18} style={{ color: contentCardStyle.color, opacity: 0.7 }} /></div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-0.5" style={{ color: contentCardStyle.color, opacity: 0.6 }}>Website</p>
+                        <a href={store.website} target="_blank" rel="noopener noreferrer" className="text-sm hover:underline break-all" style={{ color: contentCardStyle.color }}>{store.website}</a>
+                      </div>
+                    </div>
+                  )}
+                  {(store.socialLinks?.facebook || store.socialLinks?.instagram || store.socialLinks?.twitter || store.socialLinks?.whatsapp) && (
+                    <div className="flex items-start gap-4">
+                      <div className="rounded-full bg-white/80 shadow p-2 mt-0.5"><span className="text-xs font-bold" style={{ color: contentCardStyle.color, opacity: 0.7 }}>@</span></div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: contentCardStyle.color, opacity: 0.6 }}>Social Media</p>
+                        <div className="flex gap-3" style={{ color: contentCardStyle.color }}>
+                          {store.socialLinks?.facebook && (
+                            <a href={store.socialLinks.facebook} target="_blank" rel="noopener noreferrer" className={`${currentTheme.link} hover:opacity-70`} title="Facebook"><Facebook size={22} /></a>
+                          )}
+                          {store.socialLinks?.instagram && (
+                            <a href={store.socialLinks.instagram} target="_blank" rel="noopener noreferrer" className={`${currentTheme.link} hover:opacity-70`} title="Instagram"><Instagram size={22} /></a>
+                          )}
+                          {store.socialLinks?.twitter && (
+                            <a href={store.socialLinks.twitter} target="_blank" rel="noopener noreferrer" className={`${currentTheme.link} hover:opacity-70`} title="Twitter"><Twitter size={22} /></a>
+                          )}
+                          {store.socialLinks?.whatsapp && (
+                            <a href={`https://wa.me/${store.socialLinks.whatsapp.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className={`${currentTheme.link} hover:opacity-70`} title="WhatsApp">
+                              <svg viewBox="0 0 24 24" className="w-[22px] h-[22px] fill-current"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Send a Message Card */}
+              {contactFormStyle === 7 ? (
+                <Card className={currentTheme.cardSoft}>
+                  <CardContent className="p-6 space-y-4">
+                    <h3 className={`font-semibold text-lg ${currentTheme.sectionTitle}`}>Quick Contact</h3>
+                    {store.socialLinks?.whatsapp ? (
+                      <a
+                        href={`https://wa.me/${store.socialLinks.whatsapp.replace(/\D/g, '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center gap-2 w-full h-11 rounded-md bg-green-500 hover:bg-green-600 text-white font-semibold"
+                      >
+                        <span>📲</span>
+                        Message on WhatsApp
+                      </a>
+                    ) : (
+                      <StoreContactForm storeId={storeId!} storeName={store.name} theme={currentTheme} formStyle={contactFormStyle as 1 | 2 | 3 | 4 | 5 | 6} />
+                    )}
+                  </CardContent>
+                </Card>
+              ) : (
+                <StoreContactForm storeId={storeId!} storeName={store.name} theme={currentTheme} formStyle={contactFormStyle as 1 | 2 | 3 | 4 | 5 | 6} />
+              )}
+            </div>
+          </div>
+        )}
+
+        </div>{/* End content wrapper for full-width layout */}
+      </main>
+      {!editorPreview && (
+      <WhatsAppChatWidget
+        phone={store.subscriptionTier !== 'trial' ? store.whatsappBusiness : undefined}
+        storeName={store.name}
+      />
+      )}
+    </div>
+  );
+};
+
+export default StoreDetail;
